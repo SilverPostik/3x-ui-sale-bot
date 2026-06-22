@@ -3,6 +3,7 @@
 Передаёт settings как dict (не JSON-строку) — это ключевое исправление.
 """
 import uuid
+import json
 import logging
 from typing import Optional
 import aiohttp
@@ -30,9 +31,29 @@ class XUIClient:
             async with session.post(
                 f"{self.base_url}/login",
                 data={"username": self.username, "password": self.password},
+                headers={"Accept": "application/json"},
                 ssl=False,
             ) as resp:
-                data = await resp.json(content_type=None)
+                text = await resp.text()
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception as e:
+                    logger.error(
+                        "3x-ui login parse error: %s, status=%s, body=%s",
+                        e,
+                        resp.status,
+                        text,
+                    )
+                    return False
+
+                if not isinstance(data, dict):
+                    logger.error(
+                        "3x-ui login returned unexpected response type %s: %s",
+                        type(data).__name__,
+                        text,
+                    )
+                    return False
+
                 success = data.get("success", False)
                 if success:
                     logger.info("3x-ui login successful")
@@ -61,7 +82,32 @@ class XUIClient:
                     if logged_in:
                         return await self._request(method, path, json_data, retry=False)
                     return None
-                data = await resp.json(content_type=None)
+
+                text = await resp.text()
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception as e:
+                    logger.error(
+                        "3x-ui request parse error %s %s %s: %s",
+                        method,
+                        path,
+                        resp.status,
+                        e,
+                    )
+                    logger.debug("3x-ui response body: %s", text)
+                    return None
+
+                if not isinstance(data, dict):
+                    logger.error(
+                        "3x-ui request returned unexpected response type %s %s %s: %s",
+                        method,
+                        path,
+                        resp.status,
+                        type(data).__name__,
+                    )
+                    logger.debug("3x-ui response body: %s", text)
+                    return None
+
                 if not data.get("success"):
                     logger.warning(f"3x-ui {method} {path} -> {data}")
                 return data
