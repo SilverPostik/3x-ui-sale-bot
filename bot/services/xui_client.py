@@ -3,7 +3,6 @@
 Передаёт settings как dict (не JSON-строку) — это ключевое исправление.
 """
 import uuid
-import json
 import logging
 from typing import Optional
 import aiohttp
@@ -101,8 +100,8 @@ class XUIClient:
         sub_id передаётся в поле subId — используется для subscription URL.
         """
         cid = client_id or str(uuid.uuid4())
-        # ВАЖНО: settings передаётся как JSON-строка (требование 3x-ui API)
-        client_settings = json.dumps({
+        # ВАЖНО: settings передаётся как dict (не JSON-строка) — это требование 3x-ui API
+        client_settings = {
             "clients": [{
                 "id": cid,
                 "email": email,
@@ -113,7 +112,7 @@ class XUIClient:
                 "tgId": "",
                 "subId": sub_id,
             }]
-        })
+        }
         payload = {"id": inbound_id, "settings": client_settings}
         resp = await self._request("POST", "/panel/api/inbounds/addClient", json_data=payload)
         if resp and resp.get("success"):
@@ -131,7 +130,7 @@ class XUIClient:
         enable: bool = True,
         sub_id: str = "",
     ) -> bool:
-        client_settings = json.dumps({
+        client_settings = {
             "clients": [{
                 "id": client_id,
                 "email": email,
@@ -139,7 +138,7 @@ class XUIClient:
                 "enable": enable,
                 "subId": sub_id,
             }]
-        })
+        }
         payload = {"id": inbound_id, "settings": client_settings}
         resp = await self._request(
             "POST",
