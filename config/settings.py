@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     THREEXUI_URL: str
     THREEXUI_USERNAME: str
     THREEXUI_PASSWORD: str
+    THREEXUI_API_TOKEN: str | None = None
     REALITY_INBOUND_ID: int = 1
 
     # Payments

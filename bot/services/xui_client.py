@@ -25,44 +25,138 @@ class XUIClient:
             self._session = aiohttp.ClientSession(cookie_jar=jar)
         return self._session
 
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+
     async def login(self) -> bool:
+        if settings.THREEXUI_API_TOKEN:
+            logger.info("3x-ui API token auth enabled")
+            return True
+
+        session = await self._get_session()
+        for path in ("/loginAuthenticate", "/login"):
+            try:
+                async with session.post(
+                    f"{self.base_url}{path}",
+                    data={"username": self.username, "password": self.password},
+                    headers={"Accept": "application/json"},
+                    ssl=False,
+                    allow_redirects=True,
+                ) as resp:
+                    text = await resp.text()
+                    data = None
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception as e:
+                        logger.debug(
+                            "3x-ui %s parse warning: %s, status=%s, headers=%s, body=%s",
+                            path,
+                            e,
+                            resp.status,
+                            dict(resp.headers),
+                            text,
+                        )
+
+                    cookies = session.cookie_jar.filter_cookies(self.base_url)
+                    if data is None:
+                        if resp.status in (200, 302, 303, 307, 308) and cookies:
+                            logger.info(
+                                "3x-ui login successful by cookie set on %s, status=%s",
+                                path,
+                                resp.status,
+                            )
+                            await self._refresh_csrf_token()
+                            return True
+                        logger.warning(
+                            "3x-ui login %s did not return JSON: status=%s, body=%s",
+                            path,
+                            resp.status,
+                            text,
+                        )
+                        if path == "/login":
+                            return False
+                        continue
+
+                    if not isinstance(data, dict):
+                        logger.warning(
+                            "3x-ui login %s returned unexpected type %s",
+                            path,
+                            type(data).__name__,
+                        )
+                        if path == "/login":
+                            return False
+                        continue
+
+                    if data.get("success"):
+                        logger.info("3x-ui login successful")
+                        await self._refresh_csrf_token()
+                        return True
+
+                    if resp.status in (200, 302, 303, 307, 308) and cookies:
+                        logger.info(
+                            "3x-ui login successful by cookie set on %s with payload, status=%s",
+                            path,
+                            resp.status,
+                        )
+                        await self._refresh_csrf_token()
+                        return True
+
+                    logger.warning(
+                        "3x-ui login %s failed: status=%s, body=%s",
+                        path,
+                        resp.status,
+                        data,
+                    )
+                    if path == "/login":
+                        return False
+            except Exception as e:
+                logger.error("3x-ui login exception %s: %s", path, e)
+                if path == "/login":
+                    return False
+        return False
+
+    async def _refresh_csrf_token(self) -> None:
+        if settings.THREEXUI_API_TOKEN:
+            self._csrf_token = None
+            return
+
         session = await self._get_session()
         try:
-            async with session.post(
-                f"{self.base_url}/login",
-                data={"username": self.username, "password": self.password},
+            async with session.get(
+                f"{self.base_url}/csrf-token",
                 headers={"Accept": "application/json"},
                 ssl=False,
             ) as resp:
                 text = await resp.text()
+                if resp.status != 200:
+                    logger.warning("3x-ui csrf-token failed: status=%s body=%s", resp.status, text)
+                    self._csrf_token = None
+                    return
+                data = None
                 try:
                     data = await resp.json(content_type=None)
                 except Exception as e:
-                    logger.error(
-                        "3x-ui login parse error: %s, status=%s, body=%s",
-                        e,
-                        resp.status,
-                        text,
-                    )
-                    return False
+                    logger.warning("3x-ui csrf-token parse error: %s body=%s", e, text)
+                    self._csrf_token = None
+                    return
 
-                if not isinstance(data, dict):
-                    logger.error(
-                        "3x-ui login returned unexpected response type %s: %s",
-                        type(data).__name__,
-                        text,
+                if isinstance(data, dict):
+                    self._csrf_token = (
+                        data.get("obj")
+                        or data.get("csrfToken")
+                        or data.get("token")
+                        or data.get("data")
                     )
-                    return False
-
-                success = data.get("success", False)
-                if success:
-                    logger.info("3x-ui login successful")
+                    if isinstance(self._csrf_token, dict):
+                        self._csrf_token = self._csrf_token.get("csrfToken") or self._csrf_token.get("token")
+                    if not isinstance(self._csrf_token, str):
+                        self._csrf_token = None
                 else:
-                    logger.error(f"3x-ui login failed: {data}")
-                return success
+                    self._csrf_token = None
         except Exception as e:
-            logger.error(f"3x-ui login exception: {e}")
-            return False
+            logger.warning("3x-ui csrf-token exception: %s", e)
+            self._csrf_token = None
 
     async def _request(
         self,
@@ -73,11 +167,17 @@ class XUIClient:
     ) -> Optional[dict]:
         session = await self._get_session()
         url = f"{self.base_url}{path}"
+        headers = {"Accept": "application/json"}
+        if settings.THREEXUI_API_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.THREEXUI_API_TOKEN}"
+        elif getattr(self, "_csrf_token", None):
+            headers["X-CSRF-Token"] = self._csrf_token
+
         try:
             async with session.request(
-                method, url, json=json_data, ssl=False
+                method, url, json=json_data, headers=headers, ssl=False
             ) as resp:
-                if resp.status == 401 and retry:
+                if resp.status == 401 and retry and not settings.THREEXUI_API_TOKEN:
                     logged_in = await self.login()
                     if logged_in:
                         return await self._request(method, path, json_data, retry=False)
