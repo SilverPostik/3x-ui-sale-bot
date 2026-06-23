@@ -282,14 +282,25 @@ async def cb_admin_finance(callback: CallbackQuery, session: AsyncSession) -> No
     if not is_admin(callback.from_user.id):
         return
     payment_repo = PaymentRepository(session)
-    today = await payment_repo.revenue_today()
-    month = await payment_repo.revenue_month()
-    total = await payment_repo.sum_revenue()
+    # Stars
+    today_s = await payment_repo.revenue_today(currency="XTR")
+    month_s = await payment_repo.revenue_month(currency="XTR")
+    total_s = await payment_repo.sum_revenue(currency="XTR")
+    # Rubles
+    today_r = await payment_repo.revenue_today(currency="RUB")
+    month_r = await payment_repo.revenue_month(currency="RUB")
+    total_r = await payment_repo.sum_revenue(currency="RUB")
+
     text = (
         f"💰 <b>Финансы</b>\n\n"
-        f"Сегодня: <b>{today} ⭐</b>\n"
-        f"Месяц: <b>{month} ⭐</b>\n"
-        f"Всего: <b>{total} ⭐</b>"
+        f"<b>Telegram Stars ⭐</b>\n"
+        f"  Сегодня: {today_s} ⭐\n"
+        f"  Месяц:   {month_s} ⭐\n"
+        f"  Всего:   {total_s} ⭐\n\n"
+        f"<b>ЮMoney ₽</b>\n"
+        f"  Сегодня: {today_r} ₽\n"
+        f"  Месяц:   {month_r} ₽\n"
+        f"  Всего:   {total_r} ₽"
     )
     await callback.message.edit_text(text, reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
@@ -306,11 +317,24 @@ async def cb_admin_settings(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(lambda c: c.data == "admin_set_prices")
-async def cb_admin_set_prices(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_admin_set_prices(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     if not is_admin(callback.from_user.id):
         return
+    repo = SettingsRepository(session)
+    p1s = await repo.get_plan_price(1)
+    p3s = await repo.get_plan_price(3)
+    p6s = await repo.get_plan_price(6)
+    p12s = await repo.get_plan_price(12)
+    p1r = await repo.get_plan_price_rub(1)
+    p3r = await repo.get_plan_price_rub(3)
+    p6r = await repo.get_plan_price_rub(6)
+    p12r = await repo.get_plan_price_rub(12)
     await callback.message.edit_text(
-        "💰 Введите цены в формате:\n<code>1:100 3:250 6:450 12:800</code>",
+        f"💰 <b>Текущие цены</b>\n\n"
+        f"Stars ⭐: 1м={p1s} 3м={p3s} 6м={p6s} 12м={p12s}\n"
+        f"Рубли ₽: 1м={p1r} 3м={p3r} 6м={p6r} 12м={p12r}\n\n"
+        f"Формат для Stars:\n<code>stars 1:100 3:250 6:450 12:800</code>\n\n"
+        f"Формат для рублей:\n<code>rub 1:149 3:399 6:699 12:1199</code>",
         reply_markup=admin_back_kb(),
         parse_mode="HTML",
     )
@@ -325,17 +349,39 @@ async def handle_set_prices(message: Message, state: FSMContext, session: AsyncS
     await state.clear()
     repo = SettingsRepository(session)
     parts = message.text.strip().split()
+    if not parts:
+        await message.answer("❌ Пустой ввод.", reply_markup=admin_back_kb())
+        return
+
+    currency = parts[0].lower()
+    if currency == "stars":
+        prefix = "price"
+        symbol = "⭐"
+    elif currency == "rub":
+        prefix = "price_rub"
+        symbol = "₽"
+    else:
+        await message.answer(
+            "❌ Укажи тип: <code>stars</code> или <code>rub</code>",
+            reply_markup=admin_back_kb(), parse_mode="HTML",
+        )
+        return
+
     updated = []
-    for part in parts:
+    for part in parts[1:]:
         try:
             months_str, price_str = part.split(":")
             months = int(months_str)
             price = int(price_str)
-            await repo.set(f"price_{months}", str(price))
-            updated.append(f"{months} мес. = {price} ⭐")
+            await repo.set(f"{prefix}_{months}", str(price))
+            updated.append(f"{months} мес. = {price} {symbol}")
         except Exception:
             pass
+
     if updated:
-        await message.answer("✅ Цены обновлены:\n" + "\n".join(updated), reply_markup=admin_back_kb(), parse_mode="HTML")
+        await message.answer(
+            "✅ Цены обновлены:\n" + "\n".join(updated),
+            reply_markup=admin_back_kb(), parse_mode="HTML",
+        )
     else:
         await message.answer("❌ Ошибка формата.", reply_markup=admin_back_kb())

@@ -98,3 +98,13 @@ class SubscriptionRepository:
             )
         )
         return result.scalar_one()
+
+    async def get_last(self, user_id: int) -> Optional[Subscription]:
+        """Последняя подписка пользователя (любая, включая истёкшую)."""
+        result = await self.session.execute(
+            select(Subscription)
+            .where(Subscription.user_id == user_id)
+            .order_by(Subscription.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()

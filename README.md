@@ -156,3 +156,83 @@ vpn_bot/
 - Добавьте `.env` в `.gitignore`
 - ADMIN_IDS проверяется на уровне обработчиков
 - Повторная обработка платежа защищена уникальным `telegram_payment_charge_id`
+
+---
+
+## Диагностика 3x-ui (ВАЖНО прочитать)
+
+### Команды для администратора
+
+| Команда | Описание |
+|---|---|
+| `/ping` | Проверить соединение с 3x-ui, найти inbound по REALITY_INBOUND_ID |
+| `/xui` | Показать все inbound'ы с их ID |
+| `/admin` | Панель управления |
+| `/backup` | Скачать дамп PostgreSQL |
+
+### Почему запросы не доходят до панели
+
+Наиболее частые причины:
+
+1. **Неверный URL** — `THREEXUI_URL` должен включать порт и НЕ иметь слэш в конце.
+   Правильно: `https://1.2.3.4:2053` или `https://example.com:2053`
+
+2. **Нестандартный web_base_path** — если в настройках 3x-ui задан "Web Base Path" (например `/secret/`), добавь его в URL:
+   `THREEXUI_URL=https://1.2.3.4:2053/secret`
+
+3. **Самоподписанный сертификат** — клиент работает с `ssl=False`, это нормально.
+
+4. **Неверный REALITY_INBOUND_ID** — узнать ID: запусти `/xui` в боте после старта.
+
+5. **Пустые ответы от API** — известный баг в 3x-ui v2.6.x (issue #3052, #3236).
+   Клиент делает 3 попытки с задержкой 1 сек автоматически.
+
+6. **subId не генерируется** — 3x-ui не создаёт subId при API-вызове (issue #3237).
+   Бот передаёт subId явно — это единственный правильный способ.
+
+### Ручная проверка API с сервера
+
+```bash
+# Логин
+curl -X POST http://localhost:2053/login \
+  -d "username=admin&password=yourpassword"
+
+# Список inbound'ов (нужна session cookie)
+curl -b "session=<cookie>" http://localhost:2053/panel/api/inbounds/list
+```
+
+---
+
+## Переменные .env (полный список)
+
+```env
+BOT_TOKEN=                      # от @BotFather
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+POSTGRES_DB=vpnbot
+POSTGRES_USER=vpnbot
+POSTGRES_PASSWORD=
+
+THREEXUI_URL=https://1.2.3.4:2053    # БЕЗ слэша в конце
+THREEXUI_USERNAME=admin
+THREEXUI_PASSWORD=
+REALITY_INBOUND_ID=1                  # ID inbound в панели (узнать через /xui)
+DEFAULT_LIMIT_IP=1                    # Устройств на подписку
+
+TELEGRAM_STARS_PROVIDER_TOKEN=        # из @BotFather → Payments
+
+ADMIN_IDS=123456789                   # через запятую
+
+SUPPORT_USERNAME=your_support
+
+NOTIFY_7_DAYS=true
+NOTIFY_3_DAYS=true
+NOTIFY_1_DAY=true
+DISABLE_EXPIRED_USERS=true
+
+# ЮMoney (опционально)
+ENABLE_YOOMONEY=false
+YOOMONEY_WALLET=4100118XXXXXXXXX
+YOOMONEY_SECRET=
+WEBHOOK_HOST=https://yourdomain.com
+```

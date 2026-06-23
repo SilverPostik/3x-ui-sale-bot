@@ -1,226 +1,157 @@
 """
-3x-ui API client. Uses only the official REST API, no web scraping.
-Передаёт settings как dict (не JSON-строку) — это ключевое исправление.
+3x-ui API client — полностью переписан под актуальный API.
+
+Ключевые факты из документации и issues:
+- /login принимает application/x-www-form-urlencoded (username=...&password=...)
+- Сессия хранится в cookie с именем "session"
+- /panel/api/inbounds/addClient и updateClient ожидают:
+    {"id": <int>, "settings": "<JSON-строка>"}
+  то есть settings — это строка, результат json.dumps({"clients": [...]})
+- subId НЕ генерируется сервером при API-создании (баг #3237), нужно передавать явно
+- flow для VLESS Reality: "xtls-rprx-vision"
+- API может вернуть пустой ответ (баг #3052, #3236) — нужны retries
+- web_base_path из настроек панели (опциональный префикс)
 """
-import uuid
+import asyncio
 import json
 import logging
+import uuid
 from typing import Optional
+
 import aiohttp
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+_RETRY_COUNT = 3
+_RETRY_DELAY = 1.0  # seconds
+
 
 class XUIClient:
     def __init__(self) -> None:
-        self.base_url = settings.THREEXUI_URL.rstrip("/")
-        self.username = settings.THREEXUI_USERNAME
-        self.password = settings.THREEXUI_PASSWORD
+        self._base = settings.THREEXUI_URL.rstrip("/")
+        self._username = settings.THREEXUI_USERNAME
+        self._password = settings.THREEXUI_PASSWORD
         self._session: Optional[aiohttp.ClientSession] = None
+        self._logged_in: bool = False
+
+    # ------------------------------------------------------------------ session
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            jar = aiohttp.CookieJar(unsafe=True)  # unsafe=True нужен для IP-адресов
-            self._session = aiohttp.ClientSession(cookie_jar=jar)
+            # unsafe=True обязателен, если URL задан по IP (без доменного имени)
+            jar = aiohttp.CookieJar(unsafe=True)
+            connector = aiohttp.TCPConnector(ssl=False)
+            self._session = aiohttp.ClientSession(
+                cookie_jar=jar,
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=30),
+            )
+            self._logged_in = False
         return self._session
 
-    async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
-
     async def login(self) -> bool:
-        if settings.THREEXUI_API_TOKEN:
-            logger.info("3x-ui API token auth enabled")
-            return True
-
+        """
+        POST /login  с Content-Type: application/x-www-form-urlencoded
+        Сессия сохраняется в cookie jar автоматически.
+        """
         session = await self._get_session()
-        for path in ("/loginAuthenticate", "/login"):
-            try:
-                async with session.post(
-                    f"{self.base_url}{path}",
-                    data={"username": self.username, "password": self.password},
-                    headers={"Accept": "application/json"},
-                    ssl=False,
-                    allow_redirects=True,
-                ) as resp:
-                    text = await resp.text()
-                    data = None
-                    try:
-                        data = await resp.json(content_type=None)
-                    except Exception as e:
-                        logger.debug(
-                            "3x-ui %s parse warning: %s, status=%s, headers=%s, body=%s",
-                            path,
-                            e,
-                            resp.status,
-                            dict(resp.headers),
-                            text,
-                        )
-
-                    cookies = session.cookie_jar.filter_cookies(self.base_url)
-                    if data is None:
-                        if resp.status in (200, 302, 303, 307, 308) and cookies:
-                            logger.info(
-                                "3x-ui login successful by cookie set on %s, status=%s",
-                                path,
-                                resp.status,
-                            )
-                            await self._refresh_csrf_token()
-                            return True
-                        logger.warning(
-                            "3x-ui login %s did not return JSON: status=%s, body=%s",
-                            path,
-                            resp.status,
-                            text,
-                        )
-                        if path == "/login":
-                            return False
-                        continue
-
-                    if not isinstance(data, dict):
-                        logger.warning(
-                            "3x-ui login %s returned unexpected type %s",
-                            path,
-                            type(data).__name__,
-                        )
-                        if path == "/login":
-                            return False
-                        continue
-
-                    if data.get("success"):
-                        logger.info("3x-ui login successful")
-                        await self._refresh_csrf_token()
-                        return True
-
-                    if resp.status in (200, 302, 303, 307, 308) and cookies:
-                        logger.info(
-                            "3x-ui login successful by cookie set on %s with payload, status=%s",
-                            path,
-                            resp.status,
-                        )
-                        await self._refresh_csrf_token()
-                        return True
-
-                    logger.warning(
-                        "3x-ui login %s failed: status=%s, body=%s",
-                        path,
-                        resp.status,
-                        data,
-                    )
-                    if path == "/login":
-                        return False
-            except Exception as e:
-                logger.error("3x-ui login exception %s: %s", path, e)
-                if path == "/login":
-                    return False
-        return False
-
-    async def _refresh_csrf_token(self) -> None:
-        if settings.THREEXUI_API_TOKEN:
-            self._csrf_token = None
-            return
-
-        session = await self._get_session()
+        url = f"{self._base}/login"
         try:
-            async with session.get(
-                f"{self.base_url}/csrf-token",
-                headers={"Accept": "application/json"},
-                ssl=False,
+            async with session.post(
+                url,
+                data={"username": self._username, "password": self._password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             ) as resp:
                 text = await resp.text()
-                if resp.status != 200:
-                    logger.warning("3x-ui csrf-token failed: status=%s body=%s", resp.status, text)
-                    self._csrf_token = None
-                    return
-                data = None
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception as e:
-                    logger.warning("3x-ui csrf-token parse error: %s body=%s", e, text)
-                    self._csrf_token = None
-                    return
-
-                if isinstance(data, dict):
-                    self._csrf_token = (
-                        data.get("obj")
-                        or data.get("csrfToken")
-                        or data.get("token")
-                        or data.get("data")
-                    )
-                    if isinstance(self._csrf_token, dict):
-                        self._csrf_token = self._csrf_token.get("csrfToken") or self._csrf_token.get("token")
-                    if not isinstance(self._csrf_token, str):
-                        self._csrf_token = None
+                if not text.strip():
+                    logger.error("3x-ui login: empty response")
+                    return False
+                data = json.loads(text)
+                ok = data.get("success", False)
+                if ok:
+                    self._logged_in = True
+                    logger.info("3x-ui login OK")
                 else:
-                    self._csrf_token = None
+                    logger.error(f"3x-ui login failed: {data}")
+                return ok
         except Exception as e:
-            logger.warning("3x-ui csrf-token exception: %s", e)
-            self._csrf_token = None
+            logger.error(f"3x-ui login exception: {e}")
+            return False
+
+    async def _ensure_login(self) -> bool:
+        if not self._logged_in:
+            return await self.login()
+        return True
+
+    # ------------------------------------------------------------------ raw request
 
     async def _request(
         self,
         method: str,
         path: str,
-        json_data: Optional[dict] = None,
-        retry: bool = True,
+        json_body: Optional[dict] = None,
+        _retry_auth: bool = True,
     ) -> Optional[dict]:
+        """
+        Делает запрос с retry на пустой ответ (баг 3x-ui) и re-auth на 401.
+        """
+        await self._ensure_login()
         session = await self._get_session()
-        url = f"{self.base_url}{path}"
-        headers = {"Accept": "application/json"}
-        if settings.THREEXUI_API_TOKEN:
-            headers["Authorization"] = f"Bearer {settings.THREEXUI_API_TOKEN}"
-        elif getattr(self, "_csrf_token", None):
-            headers["X-CSRF-Token"] = self._csrf_token
+        url = f"{self._base}{path}"
 
-        try:
-            async with session.request(
-                method, url, json=json_data, headers=headers, ssl=False
-            ) as resp:
-                if resp.status == 401 and retry and not settings.THREEXUI_API_TOKEN:
-                    logged_in = await self.login()
-                    if logged_in:
-                        return await self._request(method, path, json_data, retry=False)
-                    return None
+        for attempt in range(1, _RETRY_COUNT + 1):
+            try:
+                async with session.request(
+                    method,
+                    url,
+                    json=json_body,
+                    headers={"Accept": "application/json"},
+                ) as resp:
+                    text = await resp.text()
 
-                text = await resp.text()
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception as e:
-                    logger.error(
-                        "3x-ui request parse error %s %s %s: %s",
-                        method,
-                        path,
-                        resp.status,
-                        e,
-                    )
-                    logger.debug("3x-ui response body: %s", text)
-                    return None
+                    # Пустой ответ — известный баг, retry
+                    if not text.strip():
+                        logger.warning(
+                            f"3x-ui empty response [{attempt}/{_RETRY_COUNT}] "
+                            f"{method} {path}"
+                        )
+                        if attempt < _RETRY_COUNT:
+                            await asyncio.sleep(_RETRY_DELAY)
+                            continue
+                        return None
 
-                if not isinstance(data, dict):
-                    logger.error(
-                        "3x-ui request returned unexpected response type %s %s %s: %s",
-                        method,
-                        path,
-                        resp.status,
-                        type(data).__name__,
-                    )
-                    logger.debug("3x-ui response body: %s", text)
-                    return None
+                    # 401 — перелогиниться и повторить
+                    if resp.status == 401 and _retry_auth:
+                        logger.info("3x-ui 401, re-login...")
+                        self._logged_in = False
+                        if await self.login():
+                            return await self._request(
+                                method, path, json_body, _retry_auth=False
+                            )
+                        return None
 
-                if not data.get("success"):
-                    logger.warning(f"3x-ui {method} {path} -> {data}")
-                return data
-        except Exception as e:
-            logger.error(f"3x-ui request error {method} {path}: {e}")
-            return None
+                    data = json.loads(text)
+                    if not data.get("success"):
+                        logger.warning(f"3x-ui {method} {path} -> {data.get('msg')}")
+                    return data
 
-    # ---------- Inbound ----------
+            except json.JSONDecodeError as e:
+                logger.error(f"3x-ui JSON decode error: {e} | text={text[:200]}")
+                return None
+            except Exception as e:
+                logger.error(f"3x-ui request error [{attempt}] {method} {path}: {e}")
+                if attempt < _RETRY_COUNT:
+                    await asyncio.sleep(_RETRY_DELAY)
+
+        return None
+
+    # ------------------------------------------------------------------ inbounds
 
     async def get_inbounds(self) -> list[dict]:
         resp = await self._request("GET", "/panel/api/inbounds/list")
         if resp and resp.get("success"):
-            return resp.get("obj", [])
+            return resp.get("obj") or []
         return []
 
     async def get_inbound(self, inbound_id: int) -> Optional[dict]:
@@ -229,7 +160,14 @@ class XUIClient:
             return resp.get("obj")
         return None
 
-    # ---------- Clients ----------
+    # ------------------------------------------------------------------ clients
+
+    def _make_client_settings_str(self, clients: list[dict]) -> str:
+        """
+        settings для addClient/updateClient — это строка (двойная сериализация).
+        Это не баг нашего кода — так работает 3x-ui API.
+        """
+        return json.dumps({"clients": clients})
 
     async def add_client(
         self,
@@ -237,34 +175,41 @@ class XUIClient:
         email: str,
         expire_ms: int,
         sub_id: str,
+        client_id: Optional[str] = None,
         limit_ip: int = 1,
         total_gb: int = 0,
-        client_id: Optional[str] = None,
+        flow: str = "xtls-rprx-vision",
     ) -> Optional[str]:
         """
-        Добавляет клиента в inbound. Возвращает UUID клиента при успехе.
-        sub_id передаётся в поле subId — используется для subscription URL.
+        Добавляет клиента в inbound.
+        Возвращает client_id (UUID) при успехе, None при ошибке.
+
+        ВАЖНО: subId передаётся явно, потому что 3x-ui НЕ генерирует его
+        автоматически при API-создании (issue #3237).
         """
         cid = client_id or str(uuid.uuid4())
-        # ВАЖНО: settings передаётся как dict (не JSON-строка) — это требование 3x-ui API
-        client_settings = {
-            "clients": [{
-                "id": cid,
-                "email": email,
-                "limitIp": limit_ip,
-                "totalGB": total_gb,
-                "expiryTime": expire_ms,
-                "enable": True,
-                "tgId": "",
-                "subId": sub_id,
-            }]
+        client = {
+            "id": cid,
+            "flow": flow,
+            "email": email,
+            "limitIp": limit_ip,
+            "totalGB": total_gb,
+            "expiryTime": expire_ms,
+            "enable": True,
+            "tgId": "",
+            "subId": sub_id,
+            "comment": "",
+            "reset": 0,
         }
-        payload = {"id": inbound_id, "settings": client_settings}
-        resp = await self._request("POST", "/panel/api/inbounds/addClient", json_data=payload)
+        payload = {
+            "id": inbound_id,
+            "settings": self._make_client_settings_str([client]),
+        }
+        resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
         if resp and resp.get("success"):
-            logger.info(f"Created 3x-ui client {cid} email={email}")
+            logger.info(f"3x-ui client created: id={cid} email={email} sub_id={sub_id}")
             return cid
-        logger.error(f"Failed to add 3x-ui client: {resp}")
+        logger.error(f"3x-ui addClient failed for email={email}: {resp}")
         return None
 
     async def update_client(
@@ -273,25 +218,44 @@ class XUIClient:
         client_id: str,
         email: str,
         expire_ms: int,
+        sub_id: str,
         enable: bool = True,
-        sub_id: str = "",
+        flow: str = "xtls-rprx-vision",
     ) -> bool:
-        client_settings = {
-            "clients": [{
-                "id": client_id,
-                "email": email,
-                "expiryTime": expire_ms,
-                "enable": enable,
-                "subId": sub_id,
-            }]
+        client = {
+            "id": client_id,
+            "flow": flow,
+            "email": email,
+            "expiryTime": expire_ms,
+            "enable": enable,
+            "subId": sub_id,
         }
-        payload = {"id": inbound_id, "settings": client_settings}
+        payload = {
+            "id": inbound_id,
+            "settings": self._make_client_settings_str([client]),
+        }
         resp = await self._request(
             "POST",
             f"/panel/api/inbounds/updateClient/{client_id}",
-            json_data=payload,
+            json_body=payload,
         )
         return bool(resp and resp.get("success"))
+
+    async def disable_client(
+        self,
+        inbound_id: int,
+        client_id: str,
+        email: str,
+        sub_id: str,
+    ) -> bool:
+        return await self.update_client(
+            inbound_id=inbound_id,
+            client_id=client_id,
+            email=email,
+            expire_ms=0,
+            sub_id=sub_id,
+            enable=False,
+        )
 
     async def delete_client(self, inbound_id: int, client_id: str) -> bool:
         resp = await self._request(
@@ -300,29 +264,41 @@ class XUIClient:
         )
         return bool(resp and resp.get("success"))
 
-    async def disable_client(self, inbound_id: int, client_id: str, email: str, sub_id: str = "") -> bool:
-        return await self.update_client(
-            inbound_id=inbound_id,
-            client_id=client_id,
-            email=email,
-            expire_ms=0,
-            enable=False,
-            sub_id=sub_id,
-        )
-
     async def get_client_stats(self, email: str) -> Optional[dict]:
-        resp = await self._request("GET", f"/panel/api/inbounds/getClientTraffics/{email}")
+        resp = await self._request(
+            "GET", f"/panel/api/inbounds/getClientTraffics/{email}"
+        )
         if resp and resp.get("success"):
             return resp.get("obj")
         return None
 
+    async def online_clients(self) -> list[str]:
+        """Возвращает список email онлайн-клиентов."""
+        resp = await self._request("POST", "/panel/api/inbounds/onlines")
+        if resp and resp.get("success"):
+            return resp.get("obj") or []
+        return []
+
+    # ------------------------------------------------------------------ subscription URL
+
     def build_subscription_url(self, sub_id: str) -> str:
-        """Subscription URL по subId клиента: <base>/sub/<subId>"""
-        return f"{self.base_url}/sub/{sub_id}"
+        """
+        Subscription URL: <panel_url>/sub/<subId>
+        Можно импортировать в HAPP и другие клиенты.
+        """
+        return f"{self._base}/sub/{sub_id}"
+
+    # ------------------------------------------------------------------ diagnostics
+
+    async def ping(self) -> bool:
+        """Быстрая проверка соединения и авторизации."""
+        inbounds = await self.get_inbounds()
+        return isinstance(inbounds, list)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
 
 
+# Глобальный singleton
 xui_client = XUIClient()

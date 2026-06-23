@@ -2,9 +2,10 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.repositories import SubscriptionRepository, UserRepository
+from bot.repositories import SubscriptionRepository
 from bot.services.xui_client import xui_client
 from config.settings import settings
 from database.models.subscription import Subscription
@@ -16,7 +17,6 @@ class SubscriptionService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.sub_repo = SubscriptionRepository(session)
-        self.user_repo = UserRepository(session)
 
     async def get_active(self, user_id: int) -> Optional[Subscription]:
         return await self.sub_repo.get_active(user_id)
@@ -28,31 +28,34 @@ class SubscriptionService:
     ) -> Optional[Subscription]:
         """
         Создаёт нового клиента в 3x-ui и запись в БД.
-        sub_id передаётся в 3x-ui — именно он используется в subscription URL.
         """
         expires_at = datetime.now(timezone.utc) + timedelta(days=30 * plan_months)
         expire_ms = int(expires_at.timestamp() * 1000)
-        email = f"tg_{user_id}"
-        client_id = str(uuid.uuid4())
-        sub_id = uuid.uuid4().hex  # subId для subscription URL
 
-        logged_in = await xui_client.login()
-        if not logged_in:
-            logger.error("Cannot login to 3x-ui")
-            return None
+        # email должен быть уникальным в рамках inbound
+        email = f"tg{user_id}"
+        client_id = str(uuid.uuid4())
+        # subId явно передаём — 3x-ui не генерирует его сам через API (issue #3237)
+        sub_id = uuid.uuid4().hex[:16]
+
+        logger.info(
+            f"Creating 3x-ui client: user={user_id} email={email} "
+            f"sub_id={sub_id} expire={expires_at.isoformat()}"
+        )
 
         result_id = await xui_client.add_client(
             inbound_id=settings.REALITY_INBOUND_ID,
             email=email,
             expire_ms=expire_ms,
             sub_id=sub_id,
-            limit_ip=1,
-            total_gb=0,
             client_id=client_id,
+            limit_ip=settings.DEFAULT_LIMIT_IP,
+            total_gb=0,
+            flow="xtls-rprx-vision",
         )
 
         if not result_id:
-            logger.error(f"3x-ui add_client failed for user {user_id}")
+            logger.error(f"Failed to create 3x-ui client for user {user_id}")
             return None
 
         subscription_url = xui_client.build_subscription_url(sub_id)
@@ -64,8 +67,8 @@ class SubscriptionService:
             expires_at=expires_at,
             xui_client_id=client_id,
             xui_inbound_id=settings.REALITY_INBOUND_ID,
-            subscription_url=subscription_url,
             xui_sub_id=sub_id,
+            subscription_url=subscription_url,
             inbound_type="vless_reality",
         )
         return sub
@@ -76,33 +79,39 @@ class SubscriptionService:
         plan_months: int,
     ) -> Optional[Subscription]:
         """
-        Продлевает активную подписку или создаёт новую.
+        Продлевает активную подписку. Если нет — создаёт новую.
         """
         sub = await self.sub_repo.get_active(user_id)
+        if sub is None:
+            # Проверяем — вдруг истекшая подписка уже есть (нужно продлить её же)
+            sub = await self.sub_repo.get_last(user_id)
+
         if sub is None:
             return await self.create_subscription(user_id, plan_months)
 
         now = datetime.now(timezone.utc)
-        base = max(sub.expires_at, now)
-        new_expires = base + timedelta(days=30 * plan_months)
+        base = sub.expires_at if sub.expires_at.tzinfo else sub.expires_at.replace(tzinfo=timezone.utc)
+        new_expires = max(base, now) + timedelta(days=30 * plan_months)
         expire_ms = int(new_expires.timestamp() * 1000)
-        email = f"tg_{user_id}"
+        email = f"tg{user_id}"
 
-        logged_in = await xui_client.login()
-        if not logged_in:
-            logger.error("Cannot login to 3x-ui for extend")
-            return None
+        logger.info(
+            f"Extending 3x-ui client: user={user_id} client_id={sub.xui_client_id} "
+            f"new_expires={new_expires.isoformat()}"
+        )
 
         ok = await xui_client.update_client(
             inbound_id=sub.xui_inbound_id,
             client_id=sub.xui_client_id,
             email=email,
             expire_ms=expire_ms,
-            enable=True,
             sub_id=sub.xui_sub_id or "",
+            enable=True,
+            flow="xtls-rprx-vision",
         )
+
         if not ok:
-            logger.error(f"3x-ui update_client failed for user {user_id}")
+            logger.error(f"3x-ui updateClient failed for user {user_id}")
             return None
 
         sub.expires_at = new_expires
@@ -115,20 +124,21 @@ class SubscriptionService:
         return sub
 
     async def disable_expired(self) -> list[int]:
+        """Отключает истёкшие подписки в 3x-ui и БД."""
         expired = await self.sub_repo.get_expired()
         affected: list[int] = []
-        if not expired:
-            return affected
-
-        await xui_client.login()
         for sub in expired:
-            email = f"tg_{sub.user_id}"
-            await xui_client.disable_client(
+            email = f"tg{sub.user_id}"
+            ok = await xui_client.disable_client(
                 inbound_id=sub.xui_inbound_id,
                 client_id=sub.xui_client_id,
                 email=email,
                 sub_id=sub.xui_sub_id or "",
             )
+            if ok:
+                logger.info(f"Disabled 3x-ui client for user {sub.user_id}")
+            else:
+                logger.warning(f"Failed to disable 3x-ui client for user {sub.user_id}")
             sub.is_active = False
             await self.sub_repo.update(sub)
             affected.append(sub.user_id)

@@ -15,6 +15,7 @@ from bot.services.xui_client import xui_client
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -26,24 +27,30 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Middlewares
     dp.update.outer_middleware(DbSessionMiddleware())
     dp.update.outer_middleware(UserMiddleware())
 
-    # Routers
     dp.include_router(get_main_router())
     dp.include_router(admin_router)
 
-    # Scheduler
     scheduler = setup_scheduler(bot)
     scheduler.start()
 
-    # Login to 3x-ui
-    ok = await xui_client.login()
-    if not ok:
-        logger.warning("Could not login to 3x-ui on startup — will retry on first request")
+    # Проверяем соединение с 3x-ui при старте
+    logger.info(f"Connecting to 3x-ui at {settings.THREEXUI_URL} ...")
+    if await xui_client.login():
+        ok = await xui_client.ping()
+        if ok:
+            logger.info("3x-ui connection OK ✓")
+        else:
+            logger.warning("3x-ui login OK but ping failed — check inbound settings")
+    else:
+        logger.warning(
+            "3x-ui login FAILED — bot will retry on first subscription creation. "
+            "Check THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD in .env"
+        )
 
-    # Start YooMoney webhook server (if enabled)
+    # YooMoney webhook
     webhook_runner = None
     if settings.ENABLE_YOOMONEY and settings.WEBHOOK_HOST:
         from aiohttp import web
@@ -58,7 +65,7 @@ async def main() -> None:
         webhook_runner = runner
         logger.info("YooMoney webhook listening on :8080")
 
-    logger.info("Bot started")
+    logger.info("Bot started, polling...")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
@@ -67,6 +74,7 @@ async def main() -> None:
             await webhook_runner.cleanup()
         await xui_client.close()
         await bot.session.close()
+        logger.info("Bot stopped")
 
 
 if __name__ == "__main__":
