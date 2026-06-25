@@ -45,10 +45,11 @@ class XUIClient:
         return f"{self._base}/{path.lstrip('/')}"
 
     def _subscription_url(self, sub_id: str) -> str:
-        if settings.PUBLIC_SUB_URL:
-            return f"{settings.PUBLIC_SUB_URL.rstrip('/')}/sub/{sub_id}"
         parsed = urlparse(self._base)
-        return urlunparse((parsed.scheme, parsed.netloc, f"/sub/{sub_id}", "", "", ""))
+        host = parsed.hostname  # только IP/домен без порта
+        port = settings.THREEXUI_SUB_PORT
+        netloc = f"{host}:{port}"
+        return urlunparse((parsed.scheme, netloc, f"/sub/{sub_id}", "", "", ""))
 
     # ------------------------------------------------------------------ session
 

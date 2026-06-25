@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     THREEXUI_USERNAME: str = ""
     THREEXUI_PASSWORD: str = ""
     THREEXUI_API_TOKEN: str = ""
-    PUBLIC_SUB_URL: str = ""
+    THREEXUI_SUB_PORT: int = 2096  # порт для ссылок подписки (не путать с портом панели)
     REALITY_INBOUND_ID: int = 1
     DEFAULT_LIMIT_IP: int = 1  # max devices per subscription
 
