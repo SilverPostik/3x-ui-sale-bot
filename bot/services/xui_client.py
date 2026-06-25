@@ -20,6 +20,7 @@ import logging
 import re
 import uuid
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 from config.settings import settings
@@ -42,6 +43,10 @@ class XUIClient:
 
     def _url(self, path: str) -> str:
         return f"{self._base}/{path.lstrip('/')}"
+
+    def _subscription_url(self, sub_id: str) -> str:
+        parsed = urlparse(self._base)
+        return urlunparse((parsed.scheme, parsed.netloc, f"/sub/{sub_id}", "", "", ""))
 
     # ------------------------------------------------------------------ session
 
@@ -395,10 +400,10 @@ class XUIClient:
 
     def build_subscription_url(self, sub_id: str) -> str:
         """
-        Subscription URL: <panel_url>/sub/<subId>.
-        Учитывает случай, когда панель работает в нестандартном веб-пути.
+        Subscription URL: <panel_host>/sub/<subId>.
+        Убирает дополнительный web path панели из публичного URL.
         """
-        return self._url(f"sub/{sub_id}")
+        return self._subscription_url(sub_id)
 
     # ------------------------------------------------------------------ diagnostics
 
