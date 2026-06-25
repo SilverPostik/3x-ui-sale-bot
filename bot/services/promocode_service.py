@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import PromocodeRepository, SubscriptionRepository
+from bot.services.subscription_service import SubscriptionService
 from database.models.subscription import Subscription
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class PromocodeService:
         self.session = session
         self.promo_repo = PromocodeRepository(session)
         self.sub_repo = SubscriptionRepository(session)
+        self.subscription_service = SubscriptionService(session)
 
     async def activate(self, code: str, user_id: int) -> PromocodeResult:
         promo = await self.promo_repo.get_by_code(code)
@@ -51,12 +53,21 @@ class PromocodeService:
         await self.promo_repo.update(promo)
 
         if promo.type == "days":
-            # Add days to active subscription
             sub = await self.sub_repo.get_active(user_id)
             if sub:
                 sub.expires_at = max(sub.expires_at, now) + timedelta(days=promo.value)
                 await self.sub_repo.update(sub)
-            return PromocodeResult(True, days_added=promo.value)
+                return PromocodeResult(True, days_added=promo.value)
+
+            # Если нет активной подписки, создаем новую через 3x-ui
+            new_sub = await self.subscription_service.create_promo_subscription(
+                user_id=user_id,
+                days=promo.value,
+            )
+            if new_sub:
+                return PromocodeResult(True, days_added=promo.value)
+            logger.error(f"Promocode days activation failed to create subscription for user {user_id}")
+            return PromocodeResult(False, error="invalid")
 
         if promo.type == "discount":
             return PromocodeResult(True, discount_percent=promo.value)

@@ -301,7 +301,7 @@ class XUIClient:
             "totalGB": total_gb,
             "expiryTime": expire_ms,
             "enable": True,
-            "tgId": "",
+            "tgId": 0,
             "subId": sub_id,
             "comment": "",
             "reset": 0,

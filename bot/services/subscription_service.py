@@ -73,6 +73,56 @@ class SubscriptionService:
         )
         return sub
 
+    async def create_promo_subscription(
+        self,
+        user_id: int,
+        days: int,
+    ) -> Optional[Subscription]:
+        """
+        Создаёт нового клиента в 3x-ui для промокода на дни.
+        """
+        expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+        expire_ms = int(expires_at.timestamp() * 1000)
+
+        email = f"tg{user_id}"
+        client_id = str(uuid.uuid4())
+        sub_id = uuid.uuid4().hex[:16]
+
+        logger.info(
+            f"Creating 3x-ui promo client: user={user_id} email={email} "
+            f"sub_id={sub_id} expire={expires_at.isoformat()}"
+        )
+
+        result_id = await xui_client.add_client(
+            inbound_id=settings.REALITY_INBOUND_ID,
+            email=email,
+            expire_ms=expire_ms,
+            sub_id=sub_id,
+            client_id=client_id,
+            limit_ip=settings.DEFAULT_LIMIT_IP,
+            total_gb=0,
+            flow="xtls-rprx-vision",
+        )
+
+        if not result_id:
+            logger.error(f"Failed to create promo 3x-ui client for user {user_id}")
+            return None
+
+        subscription_url = xui_client.build_subscription_url(sub_id)
+        logger.info(f"Promo subscription URL for user {user_id}: {subscription_url}")
+
+        sub = await self.sub_repo.create(
+            user_id=user_id,
+            plan_months=0,
+            expires_at=expires_at,
+            xui_client_id=client_id,
+            xui_inbound_id=settings.REALITY_INBOUND_ID,
+            xui_sub_id=sub_id,
+            subscription_url=subscription_url,
+            inbound_type="vless_reality",
+        )
+        return sub
+
     async def extend_subscription(
         self,
         user_id: int,
