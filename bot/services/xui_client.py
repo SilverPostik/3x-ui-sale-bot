@@ -45,7 +45,9 @@ class XUIClient:
         return f"{self._base}/{path.lstrip('/')}"
 
     def _subscription_url(self, sub_id: str) -> str:
-        parsed = urlparse(self._base)
+        # Подписка живёт на отдельном порту (THREEXUI_SUB_BASE), без web_base_path панели
+        sub_base = settings.THREEXUI_SUB_BASE.rstrip("/") if settings.THREEXUI_SUB_BASE else self._base
+        parsed = urlparse(sub_base)
         return urlunparse((parsed.scheme, parsed.netloc, f"/sub/{sub_id}", "", "", ""))
 
     # ------------------------------------------------------------------ session

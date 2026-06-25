@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # 3x-ui
     THREEXUI_URL: str
+    THREEXUI_SUB_BASE: str = ""  # Базовый URL для подписок, например: https://161.104.34.179:2096
     THREEXUI_USERNAME: str = ""
     THREEXUI_PASSWORD: str = ""
     THREEXUI_API_TOKEN: str = ""
