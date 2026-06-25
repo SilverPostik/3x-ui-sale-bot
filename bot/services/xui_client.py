@@ -33,6 +33,7 @@ class XUIClient:
         self._base = settings.THREEXUI_URL.rstrip("/")
         self._username = settings.THREEXUI_USERNAME
         self._password = settings.THREEXUI_PASSWORD
+        self._api_token = settings.THREEXUI_API_TOKEN
         self._session: Optional[aiohttp.ClientSession] = None
         self._logged_in: bool = False
 
@@ -53,12 +54,21 @@ class XUIClient:
 
     async def login(self) -> bool:
         """
-        Авторизация для новых версий 3x-ui (CSRF + Cookie).
+        Авторизация для новых версий 3x-ui.
+        Сначала пытается использовать Bearer API токен.
+        Если токен не задан, выполняет cookie-based login.
         """
+        if self._api_token:
+            logger.info("3x-ui API token auth enabled")
+            return True
+
+        if not self._username or not self._password:
+            logger.error("3x-ui username/password are not configured")
+            return False
+
         session = await self._get_session()
 
         try:
-            # Получаем страницу логина, cookie и CSRF
             async with session.get(self._base) as resp:
                 html = await resp.text()
 
@@ -70,7 +80,7 @@ class XUIClient:
 
             match = re.search(
                 r'csrf-token"\s+content="([^"]+)"',
-                html
+                html,
             )
 
             if not match:
@@ -79,7 +89,6 @@ class XUIClient:
 
             csrf_token = match.group(1)
 
-            # Авторизация
             async with session.post(
                 f"{self._base}/login",
                 data={
@@ -127,11 +136,19 @@ class XUIClient:
             return False
 
     async def _ensure_login(self) -> bool:
+        if self._api_token:
+            return True
         if not self._logged_in:
             return await self.login()
         return True
 
     # ------------------------------------------------------------------ raw request
+
+    def _auth_headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self._api_token:
+            headers["Authorization"] = f"Bearer {self._api_token}"
+        return headers
 
     async def _request(
         self,
@@ -141,11 +158,12 @@ class XUIClient:
         _retry_auth: bool = True,
     ) -> Optional[dict]:
         """
-        Делает запрос с retry на пустой ответ (баг 3x-ui) и re-auth на 401.
+        Делает запрос с retry на пустой ответ (баг 3x-ui) и re-auth на 401 в cookie режиме.
         """
         await self._ensure_login()
         session = await self._get_session()
         url = f"{self._base}{path}"
+        text: str = ""
 
         for attempt in range(1, _RETRY_COUNT + 1):
             try:
@@ -153,11 +171,10 @@ class XUIClient:
                     method,
                     url,
                     json=json_body,
-                    headers={"Accept": "application/json"},
+                    headers=self._auth_headers(),
                 ) as resp:
                     text = await resp.text()
 
-                    # Пустой ответ — известный баг, retry
                     if not text.strip():
                         logger.warning(
                             f"3x-ui empty response [{attempt}/{_RETRY_COUNT}] "
@@ -168,15 +185,18 @@ class XUIClient:
                             continue
                         return None
 
-                    # 401 — перелогиниться и повторить
-                    if resp.status == 401 and _retry_auth:
-                        logger.info("3x-ui 401, re-login...")
-                        self._logged_in = False
-                        if await self.login():
-                            return await self._request(
-                                method, path, json_body, _retry_auth=False
-                            )
-                        return None
+                    if resp.status == 401:
+                        if self._api_token:
+                            logger.error("3x-ui 401 with API token")
+                            return None
+                        if _retry_auth:
+                            logger.info("3x-ui 401, re-login...")
+                            self._logged_in = False
+                            if await self.login():
+                                return await self._request(
+                                    method, path, json_body, _retry_auth=False
+                                )
+                            return None
 
                     data = json.loads(text)
                     if not data.get("success"):
@@ -321,7 +341,7 @@ class XUIClient:
 
     async def online_clients(self) -> list[str]:
         """Возвращает список email онлайн-клиентов."""
-        resp = await self._request("POST", "/panel/api/clients/onlines")
+        resp = await self._request("GET", "/panel/api/clients/onlines")
         if resp and resp.get("success"):
             return resp.get("obj") or []
         return []

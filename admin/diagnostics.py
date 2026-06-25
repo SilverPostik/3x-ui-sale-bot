@@ -25,13 +25,11 @@ async def cmd_ping(message: Message) -> None:
         return
     msg = await message.answer("⏳ Проверяю соединение с 3x-ui...")
 
-    login_ok = await xui_client.login()
-    if not login_ok:
+    if not await xui_client.ping():
         await msg.edit_text(
             f"❌ <b>Ошибка авторизации 3x-ui</b>\n\n"
             f"URL: <code>{settings.THREEXUI_URL}</code>\n"
-            f"Пользователь: <code>{settings.THREEXUI_USERNAME}</code>\n\n"
-            f"Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD в .env",
+            f"Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env",
             parse_mode="HTML",
         )
         return

@@ -38,16 +38,12 @@ async def main() -> None:
 
     # Проверяем соединение с 3x-ui при старте
     logger.info(f"Connecting to 3x-ui at {settings.THREEXUI_URL} ...")
-    if await xui_client.login():
-        ok = await xui_client.ping()
-        if ok:
-            logger.info("3x-ui connection OK ✓")
-        else:
-            logger.warning("3x-ui login OK but ping failed — check inbound settings")
+    if await xui_client.ping():
+        logger.info("3x-ui connection OK ✓")
     else:
         logger.warning(
-            "3x-ui login FAILED — bot will retry on first subscription creation. "
-            "Check THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD in .env"
+            "3x-ui connection FAILED — бот будет повторно пытаться при первой попытке создания подписки. "
+            "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
     # YooMoney webhook
