@@ -18,10 +18,10 @@ class Settings(BaseSettings):
 
     # 3x-ui
     THREEXUI_URL: str
-    THREEXUI_SUB_BASE: str = ""  # Базовый URL для подписок, например: https://161.104.34.179:2096
     THREEXUI_USERNAME: str = ""
     THREEXUI_PASSWORD: str = ""
     THREEXUI_API_TOKEN: str = ""
+    PUBLIC_SUB_URL: str = ""
     REALITY_INBOUND_ID: int = 1
     DEFAULT_LIMIT_IP: int = 1  # max devices per subscription
 
