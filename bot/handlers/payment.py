@@ -88,9 +88,14 @@ async def on_successful_payment(message: Message, session: AsyncSession) -> None
         return
 
     service = PaymentService(session)
-    result = await service.confirm_payment(payment_id, charge_id)
+    sub = await service.confirm_payment(payment_id, charge_id)
 
-    if result:
+    if sub:
         await message.answer(PAYMENT_SUCCESS, reply_markup=back_to_menu_kb(), parse_mode="HTML")
     else:
+        await message.answer(
+            "⚠️ Подписка не активирована. Пожалуйста, свяжитесь с поддержкой.",
+            reply_markup=back_to_menu_kb(),
+            parse_mode="HTML",
+        )
         logger.warning(f"Payment confirmation returned None for charge_id={charge_id}")

@@ -4,10 +4,12 @@
 Ключевые факты из документации и issues:
 - /login принимает application/x-www-form-urlencoded (username=...&password=...)
 - Сессия хранится в cookie с именем "session"
-- /panel/api/inbounds/addClient и updateClient ожидают:
+- Новая API-форма клиента: /panel/api/clients/add и /panel/api/clients/update
+    {"client": {...}, "inboundIds": [<id>]}
+- Legacy-форма клиента: /panel/api/inbounds/addClient и /panel/api/inbounds/updateClient
     {"id": <int>, "settings": "<JSON-строка>"}
-  то есть settings — это строка, результат json.dumps({"clients": [...]})
-- subId НЕ генерируется сервером при API-создании (баг #3237), нужно передавать явно
+  where settings = json.dumps({"clients": [...]})
+- subId НЕ генерируется сервером при API-создании (issue #3237), нужно передавать явно
 - flow для VLESS Reality: "xtls-rprx-vision"
 - API может вернуть пустой ответ (баг #3052, #3236) — нужны retries
 - web_base_path из настроек панели (опциональный префикс)
@@ -36,6 +38,10 @@ class XUIClient:
         self._api_token = settings.THREEXUI_API_TOKEN
         self._session: Optional[aiohttp.ClientSession] = None
         self._logged_in: bool = False
+        self._csrf_token: str | None = None
+
+    def _url(self, path: str) -> str:
+        return f"{self._base}/{path.lstrip('/')}"
 
     # ------------------------------------------------------------------ session
 
@@ -88,9 +94,10 @@ class XUIClient:
                 return False
 
             csrf_token = match.group(1)
+            self._csrf_token = csrf_token
 
             async with session.post(
-                f"{self._base}/login",
+                self._url("login"),
                 data={
                     "username": self._username,
                     "password": self._password,
@@ -148,6 +155,8 @@ class XUIClient:
         headers = {"Accept": "application/json"}
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
+        elif self._csrf_token:
+            headers["X-CSRF-Token"] = self._csrf_token
         return headers
 
     async def _request(
@@ -162,11 +171,15 @@ class XUIClient:
         """
         await self._ensure_login()
         session = await self._get_session()
-        url = f"{self._base}{path}"
+        url = self._url(path)
         text: str = ""
 
         for attempt in range(1, _RETRY_COUNT + 1):
             try:
+                logger.debug(
+                    f"3x-ui request [{attempt}/{_RETRY_COUNT}] "
+                    f"{method} {url} body={json_body}"
+                )
                 async with session.request(
                     method,
                     url,
@@ -174,6 +187,10 @@ class XUIClient:
                     headers=self._auth_headers(),
                 ) as resp:
                     text = await resp.text()
+                    logger.debug(
+                        f"3x-ui response [{attempt}/{_RETRY_COUNT}] "
+                        f"{method} {url} status={resp.status} text={text[:1000]}"
+                    )
 
                     if not text.strip():
                         logger.warning(
@@ -236,6 +253,30 @@ class XUIClient:
         """
         return json.dumps({"clients": clients})
 
+    async def _try_legacy_add_client(self, inbound_id: int, client: dict) -> bool:
+        payload = {
+            "id": inbound_id,
+            "settings": self._make_client_settings_str([client]),
+        }
+        resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
+        if resp and resp.get("success"):
+            logger.info("3x-ui legacy addClient succeeded")
+            return True
+        logger.debug(f"3x-ui legacy addClient failed: {resp}")
+        return False
+
+    async def _try_legacy_update_client(self, inbound_id: int, client: dict) -> bool:
+        payload = {
+            "id": inbound_id,
+            "settings": self._make_client_settings_str([client]),
+        }
+        resp = await self._request("POST", "/panel/api/inbounds/updateClient", json_body=payload)
+        if resp and resp.get("success"):
+            logger.info("3x-ui legacy updateClient succeeded")
+            return True
+        logger.debug(f"3x-ui legacy updateClient failed: {resp}")
+        return False
+
     async def add_client(
         self,
         inbound_id: int,
@@ -248,17 +289,14 @@ class XUIClient:
         flow: str = "xtls-rprx-vision",
     ) -> Optional[str]:
         """
-        Добавляет клиента в inbound.
+        Добавляет нового клиента и привязывает его к inbound.
         Возвращает client_id (UUID) при успехе, None при ошибке.
-
-        ВАЖНО: subId передаётся явно, потому что 3x-ui НЕ генерирует его
-        автоматически при API-создании (issue #3237).
         """
         cid = client_id or str(uuid.uuid4())
         client = {
             "id": cid,
-            "flow": flow,
             "email": email,
+            "flow": flow,
             "limitIp": limit_ip,
             "totalGB": total_gb,
             "expiryTime": expire_ms,
@@ -269,14 +307,20 @@ class XUIClient:
             "reset": 0,
         }
         payload = {
-            "id": inbound_id,
-            "settings": self._make_client_settings_str([client]),
+            "client": client,
+            "inboundIds": [inbound_id],
         }
+        logger.debug(f"3x-ui add_client payload: {json.dumps(payload, ensure_ascii=False)}")
         resp = await self._request("POST", "/panel/api/clients/add", json_body=payload)
         if resp and resp.get("success"):
             logger.info(f"3x-ui client created: id={cid} email={email} sub_id={sub_id}")
             return cid
-        logger.error(f"3x-ui addClient failed for email={email}: {resp}")
+
+        logger.warning(f"3x-ui add_client primary endpoint failed for email={email}: {resp}")
+        if await self._try_legacy_add_client(inbound_id, client):
+            return cid
+
+        logger.error(f"3x-ui add_client failed for email={email}: {resp}")
         return None
 
     async def update_client(
@@ -291,22 +335,23 @@ class XUIClient:
     ) -> bool:
         client = {
             "id": client_id,
-            "flow": flow,
             "email": email,
+            "flow": flow,
             "expiryTime": expire_ms,
             "enable": enable,
             "subId": sub_id,
         }
-        payload = {
-            "id": inbound_id,
-            "settings": self._make_client_settings_str([client]),
-        }
+        logger.debug(f"3x-ui update_client payload: {json.dumps(client, ensure_ascii=False)}")
         resp = await self._request(
             "POST",
             f"/panel/api/clients/update/{email}",
-            json_body=payload,
+            json_body=client,
         )
-        return bool(resp and resp.get("success"))
+        if resp and resp.get("success"):
+            return True
+
+        logger.warning(f"3x-ui update_client primary endpoint failed for email={email}: {resp}")
+        return await self._try_legacy_update_client(inbound_id, client)
 
     async def disable_client(
         self,
@@ -327,7 +372,7 @@ class XUIClient:
     async def delete_client(self, inbound_id: int, client_id: str) -> bool:
         resp = await self._request(
             "POST",
-            f"/panel/api/inbounds/{inbound_id}/delClient/{client_id}",
+            f"/panel/api/clients/del/{client_id}",
         )
         return bool(resp and resp.get("success"))
 
@@ -350,10 +395,10 @@ class XUIClient:
 
     def build_subscription_url(self, sub_id: str) -> str:
         """
-        Subscription URL: <panel_url>/sub/<subId>
-        Можно импортировать в HAPP и другие клиенты.
+        Subscription URL: <panel_url>/sub/<subId>.
+        Учитывает случай, когда панель работает в нестандартном веб-пути.
         """
-        return f"{self._base}/sub/{sub_id}"
+        return self._url(f"sub/{sub_id}")
 
     # ------------------------------------------------------------------ diagnostics
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.repositories import PaymentRepository, SettingsRepository
 from bot.services.subscription_service import SubscriptionService
 from database.models.payment import Payment
+from database.models.subscription import Subscription
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,10 @@ class PaymentService:
         self,
         payment_id: int,
         charge_id: str,
-    ) -> Optional[Payment]:
+    ) -> Optional[Subscription]:
         """
-        Подтверждает оплату. Идемпотентен — None если уже обработан.
+        Подтверждает оплату и создаёт/продлевает подписку.
+        Идемпотентен — None если уже обработан или создание подписки не удалось.
         """
         existing = await self.payment_repo.get_by_charge_id(charge_id)
         if existing:
@@ -59,10 +61,11 @@ class PaymentService:
         payment.status = "paid"
         payment.telegram_payment_charge_id = charge_id
         payment.paid_at = datetime.now(timezone.utc)
-        payment = await self.payment_repo.update(payment)
+        await self.payment_repo.update(payment)
 
         sub = await self.sub_service.extend_subscription(payment.user_id, payment.plan_months)
         if not sub:
             logger.error(f"confirm_payment: subscription creation failed for user {payment.user_id}")
+            return None
 
-        return payment
+        return sub
