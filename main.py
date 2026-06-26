@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import os
-import ssl
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -20,22 +18,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-# Путь к сертификатам (монтируется через docker volume)
-CERT_BASE = "/etc/letsencrypt/live"
-
-
-def _build_ssl_context(domain: str) -> ssl.SSLContext | None:
-    """Строит SSL-контекст если сертификаты есть на диске."""
-    cert = f"{CERT_BASE}/{domain}/fullchain.pem"
-    key  = f"{CERT_BASE}/{domain}/privkey.pem"
-    if not (os.path.exists(cert) and os.path.exists(key)):
-        logger.warning(f"SSL сертификаты не найдены: {cert} — webhook запустится на HTTP :8080")
-        return None
-    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ctx.load_cert_chain(cert, key)
-    logger.info(f"SSL сертификат загружен: {domain}")
-    return ctx
 
 
 async def main() -> None:
@@ -63,7 +45,7 @@ async def main() -> None:
             "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
-    # ── YooMoney webhook ──────────────────────────────────────────────────────
+    # ── YooMoney webhook (plain HTTP, SSL терминируется на nginx снаружи) ─────
     webhook_runner = None
     if settings.ENABLE_YOOMONEY and settings.WEBHOOK_HOST:
         from aiohttp import web
@@ -75,20 +57,10 @@ async def main() -> None:
 
         runner = web.AppRunner(app)
         await runner.setup()
-
-        # Определяем — есть SSL или нет
-        domain = settings.WEBHOOK_HOST.removeprefix("https://").removeprefix("http://").split(":")[0]
-        ssl_ctx = _build_ssl_context(domain)
-
-        if ssl_ctx:
-            site = web.TCPSite(runner, "0.0.0.0", 443, ssl_context=ssl_ctx)
-            logger.info("YooMoney webhook listening on :443 (HTTPS)")
-        else:
-            site = web.TCPSite(runner, "0.0.0.0", 8080)
-            logger.info("YooMoney webhook listening on :8080 (HTTP, без SSL)")
-
+        site = web.TCPSite(runner, "0.0.0.0", 8080)
         await site.start()
         webhook_runner = runner
+        logger.info("YooMoney webhook listening on :8080 (nginx proxies HTTPS → here)")
 
     logger.info("Bot started, polling...")
     try:
