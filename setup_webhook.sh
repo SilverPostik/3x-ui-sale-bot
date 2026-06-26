@@ -1,13 +1,11 @@
 #!/bin/bash
 set -e
 
-# ─── Цвета ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✅ $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 fail() { echo -e "${RED}❌ $1${NC}"; exit 1; }
 
-# ─── Параметры ───────────────────────────────────────────────────────────────
 if [ -z "$1" ]; then
     echo "Использование: ./setup_webhook.sh pay.твойдомен.ru [email@mail.ru]"
     exit 1
@@ -15,7 +13,9 @@ fi
 
 DOMAIN="$1"
 EMAIL="${2:-admin@${DOMAIN}}"
-ENV_FILE="$(dirname "$0")/.env"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.env"
+COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 
 echo ""
@@ -24,112 +24,111 @@ echo "  Настройка SSL webhook для ${DOMAIN}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ─── 1. Проверка прав ────────────────────────────────────────────────────────
+# ─── 1. Root ─────────────────────────────────────────────────────────────────
 [ "$EUID" -ne 0 ] && fail "Запусти с правами root: sudo ./setup_webhook.sh ..."
 ok "Root права"
 
-# ─── 2. Проверка что домен указывает на этот сервер ──────────────────────────
+# ─── 2. DNS ──────────────────────────────────────────────────────────────────
+apt-get install -y -qq dnsutils curl 2>/dev/null || true
 MY_IP=$(curl -s https://api.ipify.org)
 DNS_IP=$(dig +short "$DOMAIN" | tail -1)
-
 echo "Мой IP:  ${MY_IP}"
 echo "DNS IP:  ${DNS_IP}"
-
 if [ "$MY_IP" != "$DNS_IP" ]; then
-    warn "Домен ${DOMAIN} указывает на ${DNS_IP}, а не на ${MY_IP}"
+    warn "Домен ${DOMAIN} → ${DNS_IP}, ожидается ${MY_IP}"
     warn "Добавь A-запись в Cloudflare: ${DOMAIN} → ${MY_IP} (Proxy: OFF)"
     read -p "Продолжить всё равно? (y/N): " CONT
     [[ "$CONT" != "y" && "$CONT" != "Y" ]] && exit 1
 else
-    ok "DNS проверен: ${DOMAIN} → ${MY_IP}"
+    ok "DNS: ${DOMAIN} → ${MY_IP}"
 fi
 
-# ─── 3. Установка certbot ─────────────────────────────────────────────────────
+# ─── 3. Certbot ──────────────────────────────────────────────────────────────
 if ! command -v certbot &>/dev/null; then
     echo "Устанавливаю certbot..."
-    apt-get update -qq
-    apt-get install -y -qq certbot dnsutils curl
+    apt-get update -qq && apt-get install -y -qq certbot
     ok "certbot установлен"
 else
     ok "certbot уже установлен"
 fi
 
-# ─── 4. Освобождаем порт 80 для certbot ──────────────────────────────────────
-# Если docker занял 80 — временно останавливаем
-DOCKER_USED_80=false
+# ─── 4. Освобождаем порт 80 ──────────────────────────────────────────────────
+DOCKER_WAS_RUNNING=false
 if ss -tlnp | grep -q ':80 '; then
-    warn "Порт 80 занят, временно останавливаю docker-compose..."
-    cd "$(dirname "$0")"
-    docker compose down 2>/dev/null || true
-    DOCKER_USED_80=true
+    warn "Порт 80 занят — временно останавливаю docker compose..."
+    cd "$SCRIPT_DIR" && docker compose down 2>/dev/null || true
+    DOCKER_WAS_RUNNING=true
 fi
 
-# ─── 5. Выпуск сертификата ───────────────────────────────────────────────────
+# ─── 5. Сертификат ───────────────────────────────────────────────────────────
 if [ -d "$CERT_DIR" ]; then
-    ok "Сертификат уже существует, обновляю..."
     certbot renew --cert-name "$DOMAIN" --quiet
+    ok "Сертификат обновлён"
 else
-    echo "Выпускаю сертификат для ${DOMAIN}..."
-    certbot certonly \
-        --standalone \
-        --non-interactive \
-        --agree-tos \
-        --email "$EMAIL" \
-        -d "$DOMAIN"
+    certbot certonly --standalone --non-interactive --agree-tos --email "$EMAIL" -d "$DOMAIN"
+    ok "Сертификат выпущен: ${CERT_DIR}"
 fi
 
-ok "Сертификат выпущен: ${CERT_DIR}"
-
-# ─── 6. Обновляем .env ────────────────────────────────────────────────────────
+# ─── 6. Обновляем .env ───────────────────────────────────────────────────────
 if [ -f "$ENV_FILE" ]; then
     if grep -q "^WEBHOOK_HOST=" "$ENV_FILE"; then
         sed -i "s|^WEBHOOK_HOST=.*|WEBHOOK_HOST=https://${DOMAIN}|" "$ENV_FILE"
     else
         echo "WEBHOOK_HOST=https://${DOMAIN}" >> "$ENV_FILE"
     fi
-    ok ".env обновлён: WEBHOOK_HOST=https://${DOMAIN}"
+    ok ".env: WEBHOOK_HOST=https://${DOMAIN}"
 else
-    warn ".env не найден рядом со скриптом, обнови вручную:"
-    echo "  WEBHOOK_HOST=https://${DOMAIN}"
+    warn ".env не найден — добавь вручную: WEBHOOK_HOST=https://${DOMAIN}"
 fi
 
-# ─── 7. Обновляем docker-compose — порт 443 и монтирование сертов ────────────
-COMPOSE_FILE="$(dirname "$0")/docker-compose.yml"
+# ─── 7. Обновляем docker-compose.yml ─────────────────────────────────────────
 if [ -f "$COMPOSE_FILE" ]; then
-    # Проверяем, не добавлено ли уже
-    if ! grep -q "443:443" "$COMPOSE_FILE"; then
-        warn "Обнови docker-compose.yml вручную — добавь в секцию bot:"
-        echo ""
-        echo "    ports:"
-        echo "      - \"443:443\""
-        echo "    volumes:"
-        echo "      - /etc/letsencrypt:/etc/letsencrypt:ro"
-        echo ""
+    # Порт 443
+    if ! grep -q '"443:443"' "$COMPOSE_FILE" && ! grep -q "'443:443'" "$COMPOSE_FILE" && ! grep -q "443:443" "$COMPOSE_FILE"; then
+        # Заменяем "8080:8080" на два порта, или добавляем 443 после существующего ports блока
+        if grep -q "8080:8080" "$COMPOSE_FILE"; then
+            sed -i 's|"8080:8080"|"443:443"\n      - "8080:8080"|' "$COMPOSE_FILE"
+        else
+            # Добавляем ports секцию перед volumes в секции bot
+            sed -i '/env_file: .env/a\    ports:\n      - "443:443"\n      - "8080:8080"' "$COMPOSE_FILE"
+        fi
+        ok "docker-compose.yml: добавлен порт 443"
     else
-        ok "docker-compose.yml уже содержит порт 443"
+        ok "docker-compose.yml: порт 443 уже есть"
     fi
+
+    # Volume /etc/letsencrypt
+    if ! grep -q "letsencrypt" "$COMPOSE_FILE"; then
+        sed -i 's|- \.:/app|- .:/app\n      - /etc/letsencrypt:/etc/letsencrypt:ro|' "$COMPOSE_FILE"
+        ok "docker-compose.yml: добавлен volume /etc/letsencrypt"
+    else
+        ok "docker-compose.yml: volume /etc/letsencrypt уже есть"
+    fi
+else
+    warn "docker-compose.yml не найден"
 fi
 
-# ─── 8. Автообновление сертификата через cron ─────────────────────────────────
-CRON_JOB="0 3 * * * certbot renew --quiet --pre-hook 'docker compose -f $(dirname "$0")/docker-compose.yml down' --post-hook 'docker compose -f $(dirname "$0")/docker-compose.yml up -d'"
+# ─── 8. ufw: открываем порт 443 ──────────────────────────────────────────────
+if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
+    ufw allow 443/tcp >/dev/null 2>&1
+    ok "ufw: порт 443 открыт"
+fi
+
+# ─── 9. Cron автообновление ──────────────────────────────────────────────────
+CRON_JOB="0 3 * * * certbot renew --quiet --pre-hook 'docker compose -f ${COMPOSE_FILE} down' --post-hook 'docker compose -f ${COMPOSE_FILE} up -d'"
 (crontab -l 2>/dev/null | grep -v "certbot renew"; echo "$CRON_JOB") | crontab -
-ok "Автообновление сертификата добавлено в cron (каждую ночь в 3:00)"
+ok "cron: автообновление сертификата каждую ночь в 3:00"
 
-# ─── 9. Поднимаем обратно ─────────────────────────────────────────────────────
-if [ "$DOCKER_USED_80" = true ]; then
-    cd "$(dirname "$0")"
-    docker compose up -d
-    ok "docker-compose запущен"
-fi
+# ─── 10. Перезапускаем бота ──────────────────────────────────────────────────
+cd "$SCRIPT_DIR"
+docker compose up -d --build
+ok "docker compose: бот перезапущен"
 
-# ─── Итог ─────────────────────────────────────────────────────────────────────
+# ─── Итог ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ok "Готово!"
+ok "Всё готово!"
 echo ""
-echo "Следующие шаги:"
-echo "  1. Обнови docker-compose.yml (порт 443 + volume /etc/letsencrypt)"
-echo "  2. Перезапусти бота: docker compose up -d --build"
-echo "  3. В YooMoney укажи webhook:"
-echo "     https://${DOMAIN}/yoomoney/notify"
+echo "  Укажи в YooMoney → Уведомления HTTP:"
+echo "  https://${DOMAIN}/yoomoney/notify"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
