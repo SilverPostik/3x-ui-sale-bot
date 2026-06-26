@@ -32,6 +32,7 @@ class PaymentService:
         provider: str = "telegram_stars",
         currency: str = "XTR",
     ) -> Payment:
+        """Создаёт pending-платёж. Единственный метод для всех провайдеров."""
         return await self.payment_repo.create(
             user_id=user_id,
             plan_months=plan_months,
@@ -43,15 +44,15 @@ class PaymentService:
     async def confirm_payment(
         self,
         payment_id: int,
-        charge_id: str,
+        external_payment_id: str,
     ) -> Optional[Subscription]:
         """
         Подтверждает оплату и создаёт/продлевает подписку.
-        Идемпотентен — None если уже обработан или создание подписки не удалось.
+        Идемпотентен — возвращает None если уже обработан.
         """
-        existing = await self.payment_repo.get_by_charge_id(charge_id)
+        existing = await self.payment_repo.get_by_external_id(external_payment_id)
         if existing:
-            logger.warning(f"Duplicate payment charge_id={charge_id}")
+            logger.warning(f"Duplicate payment external_id={external_payment_id}")
             return None
 
         payment = await self.payment_repo.get_by_id(payment_id)
@@ -59,7 +60,7 @@ class PaymentService:
             return None
 
         payment.status = "paid"
-        payment.telegram_payment_charge_id = charge_id
+        payment.external_payment_id = external_payment_id
         payment.paid_at = datetime.now(timezone.utc)
         await self.payment_repo.update(payment)
 

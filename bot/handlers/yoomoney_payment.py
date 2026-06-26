@@ -2,10 +2,9 @@
 ЮMoney платёжный flow:
 1. Пользователь выбирает тариф → бот отправляет ссылку на оплату YooMoney Quickpay.
 2. После оплаты YooMoney делает HTTP POST на вебхук-эндпоинт.
-3. Вебхук проверяет подпись, помечает платёж оплаченным, создаёт подписку.
+3. Вебхук проверяет подпись, подтверждает платёж, выдаёт подписку и уведомляет пользователя.
 
-Для получения уведомлений нужно настроить вебхук в личном кабинете YooMoney:
-  Настройки → Переводы и платежи → Уведомления HTTP → ваш URL /yoomoney/notify
+Кнопка "Я оплатил" отсутствует — всё автоматически через webhook.
 """
 import logging
 from aiogram import Router
@@ -17,7 +16,7 @@ from bot.services.payment_service import PaymentService
 from bot.services.yoomoney_client import build_payment_url
 from config.settings import settings
 from config.texts import CHOOSE_PLAN, PLAN_NAMES
-from bot.keyboards import plans_kb, back_to_menu_kb
+from bot.keyboards import back_to_menu_kb
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -80,7 +79,6 @@ async def cb_ym_select_plan(callback: CallbackQuery, session: AsyncSession) -> N
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить через ЮMoney", url=pay_url)],
-        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"ym_check_{pending.id}")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
     ])
 
@@ -88,43 +86,10 @@ async def cb_ym_select_plan(callback: CallbackQuery, session: AsyncSession) -> N
         f"💳 <b>Оплата через ЮMoney</b>\n\n"
         f"Тариф: <b>{plan_name}</b>\n"
         f"Сумма: <b>{price_rub} ₽</b>\n\n"
-        f"1. Нажмите кнопку «Оплатить».\n"
-        f"2. После оплаты нажмите «Я оплатил».\n\n"
-        f"⚠️ Подписка активируется автоматически после подтверждения платежа.",
+        f"Нажмите кнопку «Оплатить» и завершите оплату.\n\n"
+        f"✅ Подписка активируется автоматически после подтверждения платежа.\n"
+        f"Обычно это занимает до 1 минуты.",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await callback.answer()
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("ym_check_"))
-async def cb_ym_check(callback: CallbackQuery, session: AsyncSession) -> None:
-    """
-    Пользователь нажал 'Я оплатил'. Проверяем статус платежа в БД.
-    Если вебхук уже пришёл — активируем подписку. Иначе — просим подождать.
-    """
-    try:
-        payment_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка.", show_alert=True)
-        return
-
-    from bot.repositories import PaymentRepository
-    payment_repo = PaymentRepository(session)
-    payment = await payment_repo.get_by_id(payment_id)
-
-    if not payment:
-        await callback.answer("Платёж не найден.", show_alert=True)
-        return
-
-    if payment.status == "paid":
-        await callback.message.edit_text(
-            "✅ <b>Оплата подтверждена!</b>\n\nВаша подписка активирована.",
-            reply_markup=back_to_menu_kb(),
-            parse_mode="HTML",
-        )
-    else:
-        await callback.answer(
-            "⏳ Оплата ещё не подтверждена. Подождите 1-2 минуты и попробуйте снова.",
-            show_alert=True,
-        )

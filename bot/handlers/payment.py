@@ -6,8 +6,6 @@ from aiogram.types import (
     Message,
     LabeledPrice,
 )
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import SettingsRepository
@@ -23,10 +21,6 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 PLAN_OPTIONS = [1, 3, 6, 12]
-
-
-class PaymentStates(StatesGroup):
-    choosing_plan = State()
 
 
 @router.callback_query(lambda c: c.data == "buy")
@@ -57,7 +51,9 @@ async def cb_select_plan(callback: CallbackQuery, session: AsyncSession) -> None
     pending = await payment_service.create_pending_payment(
         user_id=callback.from_user.id,
         plan_months=months,
-        amount_stars=price,
+        amount=price,
+        provider="telegram_stars",
+        currency="XTR",
     )
 
     await callback.message.answer_invoice(

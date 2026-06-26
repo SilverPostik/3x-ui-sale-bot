@@ -18,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 async def yoomoney_notify(request: web.Request) -> web.Response:
     try:
-        data = await request.post()
-        data = dict(data)
+        data = dict(await request.post())
     except Exception as e:
         logger.error(f"YooMoney webhook parse error: {e}")
         return web.Response(status=400)
@@ -45,7 +44,7 @@ async def yoomoney_notify(request: web.Request) -> web.Response:
         payment_repo = PaymentRepository(session)
 
         # Защита от дублей
-        existing = await payment_repo.get_by_charge_id(operation_id)
+        existing = await payment_repo.get_by_external_id(operation_id)
         if existing:
             logger.info(f"Duplicate YooMoney notification operation_id={operation_id}")
             return web.Response(status=200)
@@ -55,7 +54,7 @@ async def yoomoney_notify(request: web.Request) -> web.Response:
             return web.Response(status=200)
 
         payment.status = "paid"
-        payment.telegram_payment_charge_id = operation_id
+        payment.external_payment_id = operation_id
         payment.paid_at = datetime.now(timezone.utc)
         await payment_repo.update(payment)
 
@@ -64,7 +63,6 @@ async def yoomoney_notify(request: web.Request) -> web.Response:
 
         if sub:
             logger.info(f"YooMoney: subscription created for user {payment.user_id}")
-            # Уведомляем пользователя через бота (бот передаётся через app)
             bot = request.app.get("bot")
             if bot:
                 try:

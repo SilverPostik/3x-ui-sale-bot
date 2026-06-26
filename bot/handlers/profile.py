@@ -66,7 +66,7 @@ async def cb_payment_history(callback: CallbackQuery, session: AsyncSession) -> 
         lines.append(
             f"• {date_str} — "
             f"{PLAN_NAMES.get(p.plan_months, str(p.plan_months))} — "
-            f"{p.amount_stars} {currency}"
+            f"{p.amount} {currency}"
         )
 
     await callback.message.edit_text(

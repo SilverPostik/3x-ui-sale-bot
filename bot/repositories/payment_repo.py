@@ -20,7 +20,7 @@ class PaymentRepository:
         payment = Payment(
             user_id=user_id,
             plan_months=plan_months,
-            amount_stars=amount,
+            amount=amount,
             currency=currency,
             provider=provider,
         )
@@ -33,11 +33,15 @@ class PaymentRepository:
         result = await self.session.execute(select(Payment).where(Payment.id == payment_id))
         return result.scalar_one_or_none()
 
-    async def get_by_charge_id(self, charge_id: str) -> Optional[Payment]:
+    async def get_by_external_id(self, external_id: str) -> Optional[Payment]:
         result = await self.session.execute(
-            select(Payment).where(Payment.telegram_payment_charge_id == charge_id)
+            select(Payment).where(Payment.external_payment_id == external_id)
         )
         return result.scalar_one_or_none()
+
+    # backward compat alias (используется в confirm_payment для Stars)
+    async def get_by_charge_id(self, charge_id: str) -> Optional[Payment]:
+        return await self.get_by_external_id(charge_id)
 
     async def update(self, payment: Payment) -> Payment:
         self.session.add(payment)
@@ -54,7 +58,7 @@ class PaymentRepository:
         return list(result.scalars().all())
 
     async def sum_revenue(self, since: Optional[datetime] = None, currency: str = "XTR") -> int:
-        query = select(func.sum(Payment.amount_stars)).where(
+        query = select(func.sum(Payment.amount)).where(
             and_(Payment.status == "paid", Payment.currency == currency)
         )
         if since:
