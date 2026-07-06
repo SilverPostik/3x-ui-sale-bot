@@ -44,7 +44,7 @@ class SubscriptionService:
         )
 
         result_id = await xui_client.add_client(
-            inbound_ids=settings.INBOUND_IDS,
+            inbound_id=settings.REALITY_INBOUND_ID,
             email=email,
             expire_ms=expire_ms,
             sub_id=sub_id,
@@ -66,7 +66,7 @@ class SubscriptionService:
             plan_months=plan_months,
             expires_at=expires_at,
             xui_client_id=client_id,
-            xui_inbound_ids=settings.INBOUND_IDS,
+            xui_inbound_id=settings.REALITY_INBOUND_ID,
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
             inbound_type="vless_reality",
@@ -94,7 +94,7 @@ class SubscriptionService:
         )
 
         result_id = await xui_client.add_client(
-            inbound_ids=settings.INBOUND_IDS,
+            inbound_id=settings.REALITY_INBOUND_ID,
             email=email,
             expire_ms=expire_ms,
             sub_id=sub_id,
@@ -116,7 +116,7 @@ class SubscriptionService:
             plan_months=0,
             expires_at=expires_at,
             xui_client_id=client_id,
-            xui_inbound_ids=settings.INBOUND_IDS,
+            xui_inbound_id=settings.REALITY_INBOUND_ID,
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
             inbound_type="vless_reality",
@@ -151,6 +151,7 @@ class SubscriptionService:
         )
 
         ok = await xui_client.update_client(
+            inbound_id=sub.xui_inbound_id,
             client_id=sub.xui_client_id,
             email=email,
             expire_ms=expire_ms,
@@ -179,6 +180,7 @@ class SubscriptionService:
         for sub in expired:
             email = f"tg{sub.user_id}"
             ok = await xui_client.disable_client(
+                inbound_id=sub.xui_inbound_id,
                 client_id=sub.xui_client_id,
                 email=email,
                 sub_id=sub.xui_sub_id or "",

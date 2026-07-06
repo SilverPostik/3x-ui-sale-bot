@@ -5,8 +5,6 @@ from bot.keyboards.main_kb import (
     instruction_kb,
     plans_kb,
     back_to_menu_kb,
-    docs_menu_kb,
-    docs_back_kb,
 )
 from bot.keyboards.admin_kb import (
     admin_menu_kb,
@@ -24,8 +22,6 @@ __all__ = [
     "instruction_kb",
     "plans_kb",
     "back_to_menu_kb",
-    "docs_menu_kb",
-    "docs_back_kb",
     "admin_menu_kb",
     "admin_users_kb",
     "admin_promos_kb",

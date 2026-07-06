@@ -3,20 +3,14 @@ from aiogram.types import CallbackQuery
 
 from bot.keyboards import back_to_menu_kb
 from config.settings import settings
-from config.texts import SUPPORT_TEXT, SUPPORT_TEXT_WITH_EMAIL
+from config.texts import SUPPORT_TEXT
 
 router = Router()
 
 
 @router.callback_query(lambda c: c.data == "support")
 async def cb_support(callback: CallbackQuery) -> None:
-    if settings.SUPPORT_EMAIL:
-        text = SUPPORT_TEXT_WITH_EMAIL.format(
-            username=settings.SUPPORT_USERNAME,
-            email=settings.SUPPORT_EMAIL,
-        )
-    else:
-        text = SUPPORT_TEXT.format(username=settings.SUPPORT_USERNAME)
+    text = SUPPORT_TEXT.format(username=settings.SUPPORT_USERNAME)
     await callback.message.edit_text(
         text, reply_markup=back_to_menu_kb(), parse_mode="HTML"
     )

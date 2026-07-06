@@ -45,11 +45,30 @@ async def main() -> None:
             "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
+    # ── YooMoney webhook (plain HTTP, SSL терминируется на nginx снаружи) ─────
+    webhook_runner = None
+    if settings.ENABLE_YOOMONEY and settings.WEBHOOK_HOST:
+        from aiohttp import web
+        from bot.webhook.yoomoney_webhook import setup_yoomoney_webhook
+
+        app = web.Application()
+        app["bot"] = bot
+        setup_yoomoney_webhook(app)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", 8080)
+        await site.start()
+        webhook_runner = runner
+        logger.info("YooMoney webhook listening on :8080 (nginx proxies HTTPS → here)")
+
     logger.info("Bot started, polling...")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler.shutdown()
+        if webhook_runner:
+            await webhook_runner.cleanup()
         await xui_client.close()
         await bot.session.close()
         logger.info("Bot stopped")
