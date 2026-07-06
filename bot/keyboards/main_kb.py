@@ -14,7 +14,29 @@ def main_menu_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📖 Поддержка", callback_data="support"),
             ],
             [InlineKeyboardButton(text="🎁 Активировать промокод", callback_data="promo")],
-            [InlineKeyboardButton(text="🚀 Купить VPN", callback_data="buy_choose")],
+            [InlineKeyboardButton(text="🚀 Купить сервер", callback_data="buy_choose")],
+            [InlineKeyboardButton(text="📄 Документы и тарифы", callback_data="docs")],
+        ]
+    )
+
+
+def docs_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Тарифы", callback_data="docs_pricing")],
+            [InlineKeyboardButton(text="🔒 Политика конфиденциальности", callback_data="docs_privacy")],
+            [InlineKeyboardButton(text="📋 Пользовательское соглашение", callback_data="docs_terms")],
+            [InlineKeyboardButton(text="📖 Поддержка", callback_data="support")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
+        ]
+    )
+
+
+def docs_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад к документам", callback_data="docs")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
         ]
     )
 
@@ -44,7 +66,7 @@ def connect_kb(has_subscription: bool) -> InlineKeyboardMarkup:
     if not has_subscription:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Купить VPN", callback_data="buy_choose")],
+                [InlineKeyboardButton(text="🚀 Купить сервер", callback_data="buy_choose")],
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
             ]
         )

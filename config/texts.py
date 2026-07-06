@@ -3,15 +3,15 @@ All bot text messages. Edit freely without touching handler code.
 """
 
 WELCOME = (
-    "👋 <b>Добро пожаловать в VPN-сервис!</b>\n\n"
-    "🔐 Быстрый, безопасный и надёжный VPN на базе VLESS Reality.\n"
+    "👋 <b>Добро пожаловать в сервис виртуальных серверов!</b>\n\n"
+    "🔐 Быстрый и надёжный доступ на базе протокола VLESS Reality.\n"
     "📱 Поддерживаем Android, iOS, Windows и macOS через приложение <b>HAPP</b>.\n\n"
     "Выберите действие:"
 )
 
 NO_SUBSCRIPTION = (
     "❌ У вас нет активной подписки.\n\n"
-    "Нажмите <b>🚀 Купить VPN</b>, чтобы начать."
+    "Нажмите <b>🚀 Купить сервер</b>, чтобы начать."
 )
 
 SUBSCRIPTION_INFO = (
@@ -40,9 +40,9 @@ PLAN_NAMES = {
 
 CHOOSE_PLAN = "🚀 <b>Выберите тариф:</b>"
 
-PAYMENT_INVOICE_TITLE = "VPN подписка — {plan}"
+PAYMENT_INVOICE_TITLE = "Подписка на виртуальный сервер — {plan}"
 PAYMENT_INVOICE_DESCRIPTION = (
-    "Доступ к VPN на {plan}. Протокол VLESS Reality. Неограниченный трафик."
+    "Доступ к виртуальному серверу на {plan}. Протокол VLESS Reality. Неограниченный трафик."
 )
 
 PAYMENT_SUCCESS = (
@@ -77,49 +77,56 @@ NOTIFY_EXPIRED = (
 )
 
 SUPPORT_TEXT = "📞 <b>Поддержка</b>\n\nОбратитесь к нашему оператору: @{username}"
+SUPPORT_TEXT_WITH_EMAIL = (
+    "📞 <b>Поддержка</b>\n\n"
+    "Telegram: @{username}\n"
+    "E-mail: {email}"
+)
+
+DOCS_MENU_TEXT = "📄 <b>Документы и информация</b>\n\nЗдесь собраны все важные документы сервиса."
 
 INSTRUCTION_CHOOSE_PLATFORM = "📚 Выберите вашу платформу:"
 
 INSTRUCTIONS = {
     "android": (
         "📱 <b>Инструкция для Android</b>\n\n"
-        "1. Установите приложение <b>HAPP VPN</b> из Google Play:\n"
+        "1. Установите приложение <b>HAPP</b> из Google Play:\n"
         "   https://play.google.com/store/apps/details?id=com.happ.vpn\n\n"
         "2. Откройте приложение → нажмите <b>+</b> → <b>Import from URL</b>.\n\n"
         "3. Вставьте ваш <b>Subscription URL</b> из раздела «Подключиться».\n\n"
         "4. Нажмите <b>Update</b> для загрузки серверов.\n\n"
         "5. Выберите сервер и нажмите <b>Connect</b>.\n\n"
-        "✅ Готово! VPN активен."
+        "✅ Готово! Сервер активен."
     ),
     "ios": (
         "🍎 <b>Инструкция для iPhone (iOS)</b>\n\n"
-        "1. Установите <b>HAPP VPN</b> из App Store:\n"
+        "1. Установите <b>HAPP</b> из App Store:\n"
         "   https://apps.apple.com/app/happ-proxy-utility/id6504287215\n\n"
         "2. Откройте приложение → нажмите <b>+</b> → <b>Import from URL</b>.\n\n"
         "3. Вставьте ваш <b>Subscription URL</b> из раздела «Подключиться».\n\n"
         "4. Нажмите <b>Update Subscription</b>.\n\n"
         "5. Выберите сервер → нажмите <b>Connect</b>.\n\n"
-        "✅ Готово! VPN активен."
+        "✅ Готово! Сервер активен."
     ),
     "windows": (
         "💻 <b>Инструкция для Windows</b>\n\n"
-        "1. Скачайте <b>HAPP VPN</b> для Windows:\n"
+        "1. Скачайте <b>HAPP</b> для Windows:\n"
         "   https://github.com/happ-client/happ-desktop/releases\n\n"
         "2. Запустите установщик, откройте приложение.\n\n"
         "3. Нажмите <b>Subscription</b> → <b>Add</b>.\n\n"
         "4. Вставьте ваш <b>Subscription URL</b>.\n\n"
         "5. Нажмите <b>Update</b> → выберите сервер → <b>Connect</b>.\n\n"
-        "✅ Готово! VPN активен."
+        "✅ Готово! Сервер активен."
     ),
     "macos": (
         "🍏 <b>Инструкция для macOS</b>\n\n"
-        "1. Скачайте <b>HAPP VPN</b> для macOS:\n"
+        "1. Скачайте <b>HAPP</b> для macOS:\n"
         "   https://github.com/happ-client/happ-desktop/releases\n\n"
         "2. Перетащите приложение в папку Applications.\n\n"
         "3. Откройте HAPP → <b>Subscription</b> → <b>Add</b>.\n\n"
         "4. Вставьте ваш <b>Subscription URL</b>.\n\n"
         "5. Нажмите <b>Update</b> → выберите сервер → <b>Connect</b>.\n\n"
-        "✅ Готово! VPN активен."
+        "✅ Готово! Сервер активен."
     ),
 }
 

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     THREEXUI_PASSWORD: str = ""
     THREEXUI_API_TOKEN: str = ""
     THREEXUI_SUB_PORT: int = 2096  # порт для ссылок подписки (не путать с портом панели)
-    REALITY_INBOUND_ID: int = 1
+    INBOUND_IDS: List[int] = [1]  # ID инбаундов 3x-ui, в которые выдаётся клиент (можно несколько через запятую)
     DEFAULT_LIMIT_IP: int = 1  # max devices per subscription
 
     # Payments
@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     # Admin
     ADMIN_IDS: List[int] = []
 
-    # Support
+    # Support (username оператора и/или e-mail — формат группы не используется)
     SUPPORT_USERNAME: str = "support"
+    SUPPORT_EMAIL: str = ""
 
     # Notifications
     NOTIFY_7_DAYS: bool = True
@@ -47,6 +48,13 @@ class Settings(BaseSettings):
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod
     def parse_admin_ids(cls, v):
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",") if x.strip()]
+        return v
+
+    @field_validator("INBOUND_IDS", mode="before")
+    @classmethod
+    def parse_inbound_ids(cls, v):
         if isinstance(v, str):
             return [int(x.strip()) for x in v.split(",") if x.strip()]
         return v

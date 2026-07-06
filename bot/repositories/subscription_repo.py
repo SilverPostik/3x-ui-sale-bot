@@ -34,18 +34,20 @@ class SubscriptionRepository:
         plan_months: int,
         expires_at: datetime,
         xui_client_id: str,
-        xui_inbound_id: int,
+        xui_inbound_ids: list[int],
         subscription_url: str,
         xui_sub_id: str = "",
         inbound_type: str = "vless_reality",
         devices: int = 1,
     ) -> Subscription:
+        ids_str = ",".join(str(i) for i in xui_inbound_ids)
         sub = Subscription(
             user_id=user_id,
             plan_months=plan_months,
             expires_at=expires_at,
             xui_client_id=xui_client_id,
-            xui_inbound_id=xui_inbound_id,
+            xui_inbound_id=xui_inbound_ids[0] if xui_inbound_ids else None,
+            xui_inbound_ids=ids_str,
             xui_sub_id=xui_sub_id,
             subscription_url=subscription_url,
             inbound_type=inbound_type,

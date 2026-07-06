@@ -35,16 +35,20 @@ async def cmd_ping(message: Message) -> None:
         return
 
     inbounds = await xui_client.get_inbounds()
-    target = next((i for i in inbounds if i.get("id") == settings.REALITY_INBOUND_ID), None)
+    found_ids = {i.get("id") for i in inbounds}
+    missing = [i for i in settings.INBOUND_IDS if i not in found_ids]
 
-    status = "✅" if target else "⚠️"
-    inbound_info = (
-        f"✅ Inbound #{settings.REALITY_INBOUND_ID} найден: "
-        f"<b>{target.get('remark', '—')}</b> port={target.get('port')}"
-        if target
-        else f"⚠️ Inbound #{settings.REALITY_INBOUND_ID} НЕ найден!\n"
-             f"Доступные inbound ID: {[i.get('id') for i in inbounds]}"
-    )
+    status = "✅" if not missing else "⚠️"
+    lines = []
+    for iid in settings.INBOUND_IDS:
+        inb = next((i for i in inbounds if i.get("id") == iid), None)
+        if inb:
+            lines.append(f"✅ Inbound #{iid}: <b>{inb.get('remark', '—')}</b> port={inb.get('port')}")
+        else:
+            lines.append(f"⚠️ Inbound #{iid} НЕ найден!")
+    if missing:
+        lines.append(f"Доступные inbound ID: {[i.get('id') for i in inbounds]}")
+    inbound_info = "\n".join(lines)
 
     await msg.edit_text(
         f"{status} <b>3x-ui соединение</b>\n\n"

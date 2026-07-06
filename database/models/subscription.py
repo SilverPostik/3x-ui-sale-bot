@@ -19,7 +19,8 @@ class Subscription(Base, TimestampMixin):
 
     # 3x-ui data
     xui_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    xui_inbound_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    xui_inbound_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # legacy, оставлено для совместимости
+    xui_inbound_ids: Mapped[str | None] = mapped_column(String(128), nullable=True)  # "1,2,3" — все inbound'ы клиента
     xui_sub_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # subId for subscription URL
     subscription_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     devices: Mapped[int] = mapped_column(Integer, default=1)
@@ -34,3 +35,12 @@ class Subscription(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<Subscription id={self.id} user_id={self.user_id} active={self.is_active}>"
+
+    @property
+    def inbound_id_list(self) -> list[int]:
+        """Список ID inbound'ов, в которые выдан клиент."""
+        if self.xui_inbound_ids:
+            return [int(x) for x in self.xui_inbound_ids.split(",") if x.strip()]
+        if self.xui_inbound_id is not None:
+            return [self.xui_inbound_id]
+        return []

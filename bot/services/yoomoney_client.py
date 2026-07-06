@@ -34,7 +34,7 @@ def build_payment_url(
         "sum": f"{amount:.2f}",
         "label": label,
         "comment": comment,
-        "targets": comment or f"VPN подписка #{label}",
+        "targets": comment or f"Подписка на сервер #{label}",
     }
     query = urllib.parse.urlencode(params)
     return f"https://yoomoney.ru/quickpay/confirm?{query}"

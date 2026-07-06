@@ -74,7 +74,7 @@ async def cb_ym_select_plan(callback: CallbackQuery, session: AsyncSession) -> N
         receiver=settings.YOOMONEY_WALLET,
         amount=float(price_rub),
         label=str(pending.id),
-        comment=f"VPN {plan_name}",
+        comment=f"Виртуальный сервер {plan_name}",
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
