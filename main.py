@@ -45,8 +45,6 @@ async def main() -> None:
             "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
-    # YooMoney integration removed — webhook handled externally if needed
-
     logger.info("Bot started, polling...")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

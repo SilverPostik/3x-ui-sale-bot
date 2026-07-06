@@ -1,5 +1,4 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config.settings import settings
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
@@ -44,8 +43,8 @@ def docs_back_kb() -> InlineKeyboardMarkup:
 def payment_method_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="buy")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
     ]
-    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

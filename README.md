@@ -59,9 +59,6 @@ DEFAULT_LIMIT_IP=1
 # Telegram Stars (токен не нужен, оставить пустым)
 TELEGRAM_STARS_PROVIDER_TOKEN=
 
-# Платежи: Telegram Stars (необязательно)
-TELEGRAM_STARS_PROVIDER_TOKEN=
-
 # Администраторы (через запятую, без скобок)
 ADMIN_IDS=123456789,987654321
 
@@ -107,9 +104,25 @@ docker compose up -d --build
 
 ---
 
-Если банк/платёжный агрегатор подключает приём по СБП, картам РФ или
-криптовалюте — новый провайдер добавляется по тому же паттерну: свой
-клиент API + свой обработчик вебхука + добавление ветки в `PaymentService`.
+## Подключение нового способа оплаты
+
+Сейчас в боте активен только **Telegram Stars** — это единственный способ,
+не требующий внешнего платёжного провайдера и вебхука.
+
+Когда будет выбрана новая платёжка (СБП, карты РФ, криптоплатежи и т.д.),
+она подключается по единому паттерну:
+
+1. Клиент API провайдера — `bot/services/<provider>_client.py` (формирование
+   ссылки на оплату, проверка подписи вебхук-уведомлений).
+2. Хендлер выбора тарифа/показа ссылки на оплату —
+   `bot/handlers/<provider>_payment.py`, регистрируется в
+   `bot/handlers/__init__.py`.
+3. Приём HTTP-уведомлений от провайдера — `bot/webhook/<provider>_webhook.py`,
+   поднимается как отдельный aiohttp-сервер в `main.py` (порт публикуется
+   в `docker-compose.yml`, DNS/SSL настраиваются на сервере под конкретный
+   домен провайдера).
+4. Общая точка входа — `PaymentService`, куда просто добавляется обработка
+   нового `provider` в модели `Payment`.
 
 ---
 
@@ -152,7 +165,7 @@ docker compose up -d --build
 │   ├── middlewares/    # DB-сессия, авторегистрация пользователей
 │   ├── repositories/   # Слой БД (Repository Pattern)
 │   ├── services/       # Бизнес-логика: платежи, подписки, 3x-ui
-│   └── webhook/        # необязательные webhook-обработчики провайдеров (опционально)
+│   └── webhook/        # aiohttp-обработчики вебхуков платёжных провайдеров (пока пусто)
 ├── admin/              # Панель администратора
 ├── scheduler/          # Ежедневные задачи (уведомления, отключение)
 ├── database/
@@ -177,7 +190,7 @@ docker compose up -d --build
 - **Подключиться** — Subscription URL + QR-код
 - **Инструкция** — приложение HAPP для Android / iOS / Windows / macOS
 - **Купить сервер** — тарифы 1/3/6/12 месяцев
-- **Оплата** — Telegram Stars (карта/кошелёк)
+- **Оплата** — Telegram Stars
 - **Промокод** — скидка или бесплатные дни
 - **Документы и тарифы** — политика конфиденциальности, пользовательское
   соглашение, актуальные тарифы, поддержка
@@ -228,16 +241,12 @@ INBOUND_IDS=1,2
 ## Платёжная архитектура
 
 ```
-Выбор тарифа → Выбор способа оплаты
+Выбор тарифа → Telegram Stars invoice
                     │
-          ┌─────────┴──────────┐
-     Telegram Stars         ЮMoney / другой провайдер
-          │                    │
-   invoice_payload        Quickpay URL / редирект
-          │                    │
-   successful_payment     webhook POST
-          │                    │
-          └─────────┬──────────┘
+             invoice_payload
+                    │
+             successful_payment
+                    │
                PaymentService
                .confirm_payment()
                     │
@@ -247,14 +256,16 @@ INBOUND_IDS=1,2
         3x-ui клиент создан/продлён во всех INBOUND_IDS
 ```
 
-Модель `Payment` единая для всех провайдеров:
+Модель `Payment` единая для всех провайдеров — при подключении новой
+платёжки (см. раздел выше) она просто добавляет свой `provider`/`currency`
+и использует тот же `PaymentService`:
 
 | Поле | Описание |
 |---|---|
-| `provider` | `telegram_stars`, `other_provider` и т.д. |
-| `currency` | `XTR`, `RUB` и т.д. |
+| `provider` | `telegram_stars`, позже — новый провайдер |
+| `currency` | `XTR`, позже — `RUB` и т.д. |
 | `amount` | сумма в соответствующей валюте |
-| `external_payment_id` | charge_id (Stars) или внешний идентификатор платёжного провайдера |
+| `external_payment_id` | charge_id (Stars) / ID транзакции нового провайдера |
 | `status` | `pending` → `paid` |
 
 ---
@@ -279,9 +290,6 @@ docker compose down && docker compose up -d
 Проверь, что все ID из `INBOUND_IDS` существуют на панели (`/xui` покажет
 список актуальных ID) и что каждый нужный inbound включён.
 
-**ЮMoney webhook не работает:**
-Проверь что домен резолвится (`dig pay.домен.ru`), сертификат есть (`ls /etc/letsencrypt/live/`), порт 443 открыт (`ufw allow 443`).
-
 **`docker-compose: command not found`:**
 ```bash
 sudo apt install docker-compose-v2 -y
@@ -294,7 +302,6 @@ sudo apt install docker-compose-v2 -y
 - Ubuntu 22.04+
 - Docker 24+ и Docker Compose v2
 - 3x-ui версии 3.x (проверено на 3.4.2) с настроенным(и) VLESS Reality/WS+TLS inbound'ом(ами)
-- Для ЮMoney и аналогичных провайдеров: домен с A-записью (Cloudflare Proxy OFF)
 
 ---
 

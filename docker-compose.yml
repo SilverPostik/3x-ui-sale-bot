@@ -23,11 +23,8 @@ services:
       db:
         condition: service_healthy
     env_file: .env
-    ports:
-      - "127.0.0.1:8080:8080"  # bot listens only on localhost
     volumes:
       - .:/app
-      - /etc/letsencrypt:/etc/letsencrypt:ro  # сертификаты read-only
     command: >
       sh -c "
         cd /app &&

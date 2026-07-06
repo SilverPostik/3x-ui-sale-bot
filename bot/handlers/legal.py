@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.keyboards import docs_menu_kb, docs_back_kb
 from bot.repositories import SettingsRepository
-from config.settings import settings
 from config.texts import DOCS_MENU_TEXT, PLAN_NAMES
 from config.legal import PRIVACY_POLICY, TERMS_OF_SERVICE, PRICING_INTRO, PRICING_ROW, PRICING_FOOTER
 
@@ -50,9 +49,7 @@ async def cb_docs_pricing(callback: CallbackQuery, session: AsyncSession) -> Non
         rub = await settings_repo.get_plan_price_rub(months)
         rows.append(PRICING_ROW.format(plan=PLAN_NAMES[months], stars=stars, rub=rub))
 
-    extra_methods = ""
-
-    text = PRICING_INTRO + "\n\n" + "\n".join(rows) + PRICING_FOOTER.format(extra_methods=extra_methods)
+    text = PRICING_INTRO + "\n\n" + "\n".join(rows) + PRICING_FOOTER.format(extra_methods="")
 
     await callback.message.edit_text(
         text, reply_markup=docs_back_kb(), parse_mode="HTML"
