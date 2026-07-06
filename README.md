@@ -1,7 +1,7 @@
 # Продажник — Telegram-бот для аренды виртуальных серверов
 
 Production-ready Telegram бот для продажи доступа к виртуальному серверу через панель **3x-ui**.
-Протокол: **VLESS + Reality**. Оплата: **Telegram Stars** и **ЮMoney** (легко расширяется другими провайдерами — СБП, карты РФ, криптоплатежи).
+Протокол: **VLESS + Reality**. Оплата: **Telegram Stars** (легко расширяется другими провайдерами — СБП, карты РФ, криптоплатежи).
 
 ---
 
@@ -59,11 +59,8 @@ DEFAULT_LIMIT_IP=1
 # Telegram Stars (токен не нужен, оставить пустым)
 TELEGRAM_STARS_PROVIDER_TOKEN=
 
-# ЮMoney (необязательно)
-ENABLE_YOOMONEY=false
-YOOMONEY_WALLET=номер_кошелька
-YOOMONEY_SECRET=секрет_уведомлений
-WEBHOOK_HOST=https://pay.твойдомен.ru
+# Платежи: Telegram Stars (необязательно)
+TELEGRAM_STARS_PROVIDER_TOKEN=
 
 # Администраторы (через запятую, без скобок)
 ADMIN_IDS=123456789,987654321
@@ -110,33 +107,9 @@ docker compose up -d --build
 
 ---
 
-## Настройка ЮMoney (webhook)
-
-ЮMoney требует HTTPS с валидным сертификатом. Запусти скрипт один раз на VPS:
-
-```bash
-chmod +x setup_webhook.sh
-sudo ./setup_webhook.sh pay.твойдомен.ru email@mail.ru
-docker compose up -d --build
-```
-
-Скрипт автоматически:
-- проверит что домен указывает на сервер
-- установит certbot и выпустит SSL-сертификат
-- обновит `WEBHOOK_HOST` в `.env`
-- добавит автообновление сертификата в cron
-
-После этого в [настройках ЮMoney](https://yoomoney.ru/transfer/myservices/http-notification) укажи:
-```
-https://pay.твойдомен.ru/yoomoney/notify
-```
-
-> В Cloudflare A-запись должна быть с **серой тучкой** (Proxy: OFF).
-
 Если банк/платёжный агрегатор подключает приём по СБП, картам РФ или
-криптовалюте — новый провайдер добавляется по тому же паттерну, что и
-`yoomoney_client.py` / `yoomoney_payment.py`: свой клиент API + свой обработчик
-вебхука + добавление ветки в `PaymentService`.
+криптовалюте — новый провайдер добавляется по тому же паттерну: свой
+клиент API + свой обработчик вебхука + добавление ветки в `PaymentService`.
 
 ---
 
@@ -178,8 +151,8 @@ https://pay.твойдомен.ru/yoomoney/notify
 │   ├── keyboards/      # Inline-клавиатуры
 │   ├── middlewares/    # DB-сессия, авторегистрация пользователей
 │   ├── repositories/   # Слой БД (Repository Pattern)
-│   ├── services/       # Бизнес-логика: платежи, подписки, 3x-ui, ЮMoney
-│   └── webhook/        # aiohttp-обработчик ЮMoney уведомлений
+│   ├── services/       # Бизнес-логика: платежи, подписки, 3x-ui
+│   └── webhook/        # необязательные webhook-обработчики провайдеров (опционально)
 ├── admin/              # Панель администратора
 ├── scheduler/          # Ежедневные задачи (уведомления, отключение)
 ├── database/
@@ -190,7 +163,6 @@ https://pay.твойдомен.ru/yoomoney/notify
 │   └── legal.py         # Политика конфиденциальности, соглашение, тарифы
 ├── migrations/         # Alembic миграции
 ├── main.py             # Точка входа
-├── setup_webhook.sh    # Скрипт настройки SSL
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -205,7 +177,7 @@ https://pay.твойдомен.ru/yoomoney/notify
 - **Подключиться** — Subscription URL + QR-код
 - **Инструкция** — приложение HAPP для Android / iOS / Windows / macOS
 - **Купить сервер** — тарифы 1/3/6/12 месяцев
-- **Оплата** — Telegram Stars или ЮMoney (карта/кошелёк)
+- **Оплата** — Telegram Stars (карта/кошелёк)
 - **Промокод** — скидка или бесплатные дни
 - **Документы и тарифы** — политика конфиденциальности, пользовательское
   соглашение, актуальные тарифы, поддержка
@@ -279,10 +251,10 @@ INBOUND_IDS=1,2
 
 | Поле | Описание |
 |---|---|
-| `provider` | `telegram_stars`, `yoomoney` и т.д. |
+| `provider` | `telegram_stars`, `other_provider` и т.д. |
 | `currency` | `XTR`, `RUB` и т.д. |
 | `amount` | сумма в соответствующей валюте |
-| `external_payment_id` | charge_id (Stars) или operation_id (ЮMoney) |
+| `external_payment_id` | charge_id (Stars) или внешний идентификатор платёжного провайдера |
 | `status` | `pending` → `paid` |
 
 ---

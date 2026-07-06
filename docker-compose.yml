@@ -24,8 +24,7 @@ services:
         condition: service_healthy
     env_file: .env
     ports:
-      - "443:443"    # HTTPS webhook (после setup_webhook.sh)
-      - "8080:8080"  # HTTP fallback (если сертификата нет)
+      - "127.0.0.1:8080:8080"  # bot listens only on localhost
     volumes:
       - .:/app
       - /etc/letsencrypt:/etc/letsencrypt:ro  # сертификаты read-only

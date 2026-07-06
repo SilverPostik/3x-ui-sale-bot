@@ -27,10 +27,6 @@ class Settings(BaseSettings):
 
     # Payments
     TELEGRAM_STARS_PROVIDER_TOKEN: str = ""
-    YOOMONEY_WALLET: str = ""         # Номер кошелька YooMoney получателя
-    YOOMONEY_SECRET: str = ""          # Секрет для проверки уведомлений
-    ENABLE_YOOMONEY: bool = False      # Включить ЮMoney как способ оплаты
-    WEBHOOK_HOST: str = ""             # https://yourdomain.com (для YooMoney webhook)
 
     # Admin
     ADMIN_IDS: List[int] = []

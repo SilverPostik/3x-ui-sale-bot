@@ -51,8 +51,6 @@ async def cb_docs_pricing(callback: CallbackQuery, session: AsyncSession) -> Non
         rows.append(PRICING_ROW.format(plan=PLAN_NAMES[months], stars=stars, rub=rub))
 
     extra_methods = ""
-    if settings.ENABLE_YOOMONEY:
-        extra_methods = ", банковская карта / ЮMoney"
 
     text = PRICING_INTRO + "\n\n" + "\n".join(rows) + PRICING_FOOTER.format(extra_methods=extra_methods)
 

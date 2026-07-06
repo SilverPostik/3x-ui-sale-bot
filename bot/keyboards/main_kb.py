@@ -45,8 +45,6 @@ def payment_method_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="buy")],
     ]
-    if settings.ENABLE_YOOMONEY:
-        buttons.append([InlineKeyboardButton(text="💳 ЮMoney (карта/кошелёк)", callback_data="buy_yoomoney")])
     buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
