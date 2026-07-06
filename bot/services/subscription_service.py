@@ -151,7 +151,6 @@ class SubscriptionService:
         )
 
         ok = await xui_client.update_client(
-            inbound_ids=sub.inbound_id_list or settings.INBOUND_IDS,
             client_id=sub.xui_client_id,
             email=email,
             expire_ms=expire_ms,
@@ -180,7 +179,6 @@ class SubscriptionService:
         for sub in expired:
             email = f"tg{sub.user_id}"
             ok = await xui_client.disable_client(
-                inbound_ids=sub.inbound_id_list or settings.INBOUND_IDS,
                 client_id=sub.xui_client_id,
                 email=email,
                 sub_id=sub.xui_sub_id or "",

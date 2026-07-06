@@ -1,23 +1,42 @@
 """
-3x-ui API client — полностью переписан под актуальный API.
+3x-ui API client — переписан под актуальный REST API панели версии 3.x
+(проверено по официальной OpenAPI-схеме /panel/api/openapi.json для 3.4.2).
 
-Ключевые факты из документации и issues:
-- /login принимает application/x-www-form-urlencoded (username=...&password=...)
-- Сессия хранится в cookie с именем "session"
-- Новая API-форма клиента: /panel/api/clients/add и /panel/api/clients/update
-    {"client": {...}, "inboundIds": [<id>]}
-- Legacy-форма клиента: /panel/api/inbounds/addClient и /panel/api/inbounds/updateClient
-    {"id": <int>, "settings": "<JSON-строка>"}
-  where settings = json.dumps({"clients": [...]})
-- subId НЕ генерируется сервером при API-создании (issue #3237), нужно передавать явно
-- flow для VLESS Reality: "xtls-rprx-vision"
-- API может вернуть пустой ответ (баг #3052, #3236) — нужны retries
-- web_base_path из настроек панели (опциональный префикс)
+Ключевые факты, подтверждённые схемой:
+- Клиенты — самостоятельные сущности (ClientRecord), не встроены в JSON inbound'а.
+  Все операции с клиентами живут под /panel/api/clients/*.
+- Старый "legacy" API (/panel/api/inbounds/addClient, /updateClient) в 3.x
+  ОТСУТСТВУЕТ — в текущей OpenAPI-схеме под /panel/api/inbounds таких путей
+  больше нет, поэтому никакого fallback на него быть не может.
+- POST /panel/api/clients/add — тело {"client": {...}, "inboundIds": [...]}.
+  Создаёт клиента и сразу привязывает к списку inbound'ов за один вызов
+  (bulkCreate использует тот же формат {client, inboundIds} поэлементно).
+- POST /panel/api/clients/update/{email} — тело это сам объект клиента
+  (без обёртки client/inboundIds). Сервер ЗАМЕНЯЕТ строку целиком, поэтому
+  нужно передавать все поля, которые должны сохраниться. Изменения сами
+  распространяются на все inbound'ы, к которым клиент уже привязан —
+  отдельно указывать inboundIds для update не нужно.
+- POST /panel/api/clients/{email}/attach и .../detach — привязка/отвязка
+  существующего клиента к дополнительным inbound'ам без пересоздания.
+- POST /panel/api/clients/del/{email} — удаление клиента по email (не по UUID).
+- GET /panel/api/clients/get/{email} — данные клиента + список привязанных
+  inbound ID.
+- POST /panel/api/clients/onlines — теперь POST, а не GET.
+- Авторизация: Bearer-токен (Settings → Security → API Token) — рекомендуемый
+  способ, полностью пропускает CSRF. Токены хранятся в панели как SHA-256
+  хэш и показываются один раз при создании — именно это значение нужно
+  положить в THREEXUI_API_TOKEN.
+  Cookie-режим (username/password) как запасной вариант: POST /login,
+  затем GET /csrf-token — токен нужно передавать в заголовке X-CSRF-Token
+  на всех "небезопасных" (изменяющих) запросах. Формат тела /login не
+  зафиксирован в текстовом описании схемы (там нет explicit request body
+  schema) — если авторизация по логину/паролю не заработает, сверьте
+  реальную форму запроса на вкладке /panel/api-docs → /login → Try it out
+  на вашей панели и поправьте `login()` ниже.
 """
 import asyncio
 import json
 import logging
-import re
 import uuid
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -68,83 +87,64 @@ class XUIClient:
 
     async def login(self) -> bool:
         """
-        Авторизация для новых версий 3x-ui.
-        Сначала пытается использовать Bearer API токен.
-        Если токен не задан, выполняет cookie-based login.
+        Bearer-токен (рекомендуется) полностью пропускает эту функцию —
+        см. _ensure_login(). Cookie-режим — запасной вариант для панелей
+        без выпущенного API-токена.
         """
         if self._api_token:
-            logger.info("3x-ui API token auth enabled")
+            logger.info("3x-ui: используется Bearer API-токен, cookie-логин не нужен")
             return True
 
         if not self._username or not self._password:
-            logger.error("3x-ui username/password are not configured")
+            logger.error("3x-ui: не заданы ни THREEXUI_API_TOKEN, ни username/password")
             return False
 
         session = await self._get_session()
 
         try:
-            async with session.get(self._base) as resp:
-                html = await resp.text()
-
-                if resp.status != 200:
-                    logger.error(
-                        f"3x-ui login page error: status={resp.status}"
-                    )
-                    return False
-
-            match = re.search(
-                r'csrf-token"\s+content="([^"]+)"',
-                html,
-            )
-
-            if not match:
-                logger.error("3x-ui csrf token not found")
-                return False
-
-            csrf_token = match.group(1)
-            self._csrf_token = csrf_token
-
             async with session.post(
                 self._url("login"),
-                data={
-                    "username": self._username,
-                    "password": self._password,
-                },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "X-CSRF-Token": csrf_token,
-                    "Referer": self._base,
-                    "Origin": self._base.rstrip("/"),
-                },
+                json={"username": self._username, "password": self._password},
+                headers={"Accept": "application/json"},
             ) as resp:
-
                 text = await resp.text()
-
-                logger.info(
-                    f"3x-ui login response: "
-                    f"status={resp.status} "
-                    f"text={text[:500]}"
-                )
+                logger.info(f"3x-ui login response: status={resp.status} text={text[:300]}")
 
                 if not text.strip():
-                    logger.error("3x-ui login: empty response")
+                    logger.error("3x-ui login: пустой ответ")
                     return False
 
                 try:
                     data = json.loads(text)
                 except Exception:
-                    logger.error(
-                        f"3x-ui login invalid json: {text[:500]}"
-                    )
+                    logger.error(f"3x-ui login: невалидный JSON: {text[:300]}")
                     return False
 
-                if data.get("success"):
-                    self._logged_in = True
-                    logger.info("3x-ui login OK")
-                    return True
+                if not data.get("success"):
+                    logger.error(f"3x-ui login failed: {data}")
+                    return False
 
-                logger.error(f"3x-ui login failed: {data}")
-                return False
+            # После успешного логина получаем CSRF-токен для последующих
+            # изменяющих запросов (POST/DELETE) в cookie-режиме.
+            async with session.get(
+                self._url("csrf-token"), headers={"Accept": "application/json"}
+            ) as resp:
+                text = await resp.text()
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    data = None
+                token = (data or {}).get("obj") if isinstance(data, dict) else None
+                if isinstance(token, dict):
+                    token = token.get("token")
+                if token:
+                    self._csrf_token = token
+                else:
+                    logger.warning(f"3x-ui: не удалось получить csrf-token: {text[:300]}")
+
+            self._logged_in = True
+            logger.info("3x-ui login OK (cookie mode)")
+            return True
 
         except Exception as e:
             logger.exception(f"3x-ui login exception: {e}")
@@ -175,7 +175,7 @@ class XUIClient:
         _retry_auth: bool = True,
     ) -> Optional[dict]:
         """
-        Делает запрос с retry на пустой ответ (баг 3x-ui) и re-auth на 401 в cookie режиме.
+        Делает запрос с retry на пустой ответ и re-auth на 401 в cookie-режиме.
         """
         await self._ensure_login()
         session = await self._get_session()
@@ -212,10 +212,10 @@ class XUIClient:
 
                     if resp.status == 401:
                         if self._api_token:
-                            logger.error("3x-ui 401 with API token")
+                            logger.error("3x-ui 401 с Bearer-токеном — проверьте THREEXUI_API_TOKEN")
                             return None
                         if _retry_auth:
-                            logger.info("3x-ui 401, re-login...")
+                            logger.info("3x-ui 401, повторный логин...")
                             self._logged_in = False
                             if await self.login():
                                 return await self._request(
@@ -254,37 +254,6 @@ class XUIClient:
 
     # ------------------------------------------------------------------ clients
 
-    def _make_client_settings_str(self, clients: list[dict]) -> str:
-        """
-        settings для addClient/updateClient — это строка (двойная сериализация).
-        Это не баг нашего кода — так работает 3x-ui API.
-        """
-        return json.dumps({"clients": clients})
-
-    async def _try_legacy_add_client(self, inbound_id: int, client: dict) -> bool:
-        payload = {
-            "id": inbound_id,
-            "settings": self._make_client_settings_str([client]),
-        }
-        resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
-        if resp and resp.get("success"):
-            logger.info("3x-ui legacy addClient succeeded")
-            return True
-        logger.debug(f"3x-ui legacy addClient failed: {resp}")
-        return False
-
-    async def _try_legacy_update_client(self, inbound_id: int, client: dict) -> bool:
-        payload = {
-            "id": inbound_id,
-            "settings": self._make_client_settings_str([client]),
-        }
-        resp = await self._request("POST", "/panel/api/inbounds/updateClient", json_body=payload)
-        if resp and resp.get("success"):
-            logger.info("3x-ui legacy updateClient succeeded")
-            return True
-        logger.debug(f"3x-ui legacy updateClient failed: {resp}")
-        return False
-
     async def add_client(
         self,
         inbound_ids: list[int],
@@ -297,9 +266,8 @@ class XUIClient:
         flow: str = "xtls-rprx-vision",
     ) -> Optional[str]:
         """
-        Добавляет нового клиента и привязывает его сразу ко всем указанным inbound'ам
-        (один и тот же UUID + subId — тогда сгенерированная subscription-ссылка
-        подхватывает конфиги из всех перечисленных inbound'ов автоматически).
+        Создаёт клиента и сразу привязывает его ко всем inbound'ам из
+        inbound_ids за один вызов POST /panel/api/clients/add.
         Возвращает client_id (UUID) при успехе, None при ошибке.
         """
         cid = client_id or str(uuid.uuid4())
@@ -329,22 +297,11 @@ class XUIClient:
             )
             return cid
 
-        logger.warning(f"3x-ui add_client primary endpoint failed for email={email}: {resp}")
-
-        # Legacy API добавляет клиента только в один inbound за раз — проходим по всем
-        legacy_ok = True
-        for inbound_id in inbound_ids:
-            if not await self._try_legacy_add_client(inbound_id, client):
-                legacy_ok = False
-        if legacy_ok:
-            return cid
-
         logger.error(f"3x-ui add_client failed for email={email}: {resp}")
         return None
 
     async def update_client(
         self,
-        inbound_ids: list[int],
         client_id: str,
         email: str,
         expire_ms: int,
@@ -352,6 +309,11 @@ class XUIClient:
         enable: bool = True,
         flow: str = "xtls-rprx-vision",
     ) -> bool:
+        """
+        Обновляет клиента по email. Изменения сами применяются ко всем
+        inbound'ам, к которым клиент уже привязан — передавать inbound_ids
+        не требуется (в отличие от add_client).
+        """
         client = {
             "id": client_id,
             "email": email,
@@ -369,24 +331,16 @@ class XUIClient:
         if resp and resp.get("success"):
             return True
 
-        logger.warning(f"3x-ui update_client primary endpoint failed for email={email}: {resp}")
-
-        # Legacy fallback — обновляем клиента в каждом inbound'е отдельно
-        legacy_ok = True
-        for inbound_id in inbound_ids:
-            if not await self._try_legacy_update_client(inbound_id, client):
-                legacy_ok = False
-        return legacy_ok
+        logger.error(f"3x-ui update_client failed for email={email}: {resp}")
+        return False
 
     async def disable_client(
         self,
-        inbound_ids: list[int],
         client_id: str,
         email: str,
         sub_id: str,
     ) -> bool:
         return await self.update_client(
-            inbound_ids=inbound_ids,
             client_id=client_id,
             email=email,
             expire_ms=0,
@@ -394,24 +348,40 @@ class XUIClient:
             enable=False,
         )
 
-    async def delete_client(self, inbound_id: int, client_id: str) -> bool:
+    async def attach_client(self, email: str, inbound_ids: list[int]) -> bool:
+        """
+        Привязывает уже существующего клиента к дополнительным inbound'ам
+        (например, если админ расширил INBOUND_IDS после того, как у части
+        пользователей уже были выданы подписки).
+        """
         resp = await self._request(
             "POST",
-            f"/panel/api/clients/del/{client_id}",
+            f"/panel/api/clients/{email}/attach",
+            json_body={"inboundIds": inbound_ids},
         )
         return bool(resp and resp.get("success"))
 
-    async def get_client_stats(self, email: str) -> Optional[dict]:
+    async def detach_client(self, email: str, inbound_ids: list[int]) -> bool:
         resp = await self._request(
-            "GET", f"/panel/api/clients/get/{email}"
+            "POST",
+            f"/panel/api/clients/{email}/detach",
+            json_body={"inboundIds": inbound_ids},
         )
+        return bool(resp and resp.get("success"))
+
+    async def delete_client(self, email: str) -> bool:
+        resp = await self._request("POST", f"/panel/api/clients/del/{email}")
+        return bool(resp and resp.get("success"))
+
+    async def get_client_stats(self, email: str) -> Optional[dict]:
+        resp = await self._request("GET", f"/panel/api/clients/get/{email}")
         if resp and resp.get("success"):
             return resp.get("obj")
         return None
 
     async def online_clients(self) -> list[str]:
-        """Возвращает список email онлайн-клиентов."""
-        resp = await self._request("GET", "/panel/api/clients/onlines")
+        """Возвращает список email онлайн-клиентов (метод — POST)."""
+        resp = await self._request("POST", "/panel/api/clients/onlines")
         if resp and resp.get("success"):
             return resp.get("obj") or []
         return []
@@ -420,8 +390,9 @@ class XUIClient:
 
     def build_subscription_url(self, sub_id: str) -> str:
         """
-        Subscription URL: <panel_host>/sub/<subId>.
-        Убирает дополнительный web path панели из публичного URL.
+        Subscription URL отдаётся отдельным сервером подписок (не /panel/api),
+        поэтому путь /sub/<subId> и отдельный порт (THREEXUI_SUB_PORT) не
+        затронуты изменениями в /panel/api/clients.
         """
         return self._subscription_url(sub_id)
 

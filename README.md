@@ -79,6 +79,27 @@ NOTIFY_1_DAY=true
 DISABLE_EXPIRED_USERS=true
 ```
 
+### 3x-ui: версия панели и авторизация
+
+Бот работает с REST API панели **3x-ui версии 3.x** (в частности 3.4.2), где
+клиенты — самостоятельные сущности под `/panel/api/clients/*`, а не JSON
+внутри inbound'а, как было в старых 2.x. Старых legacy-путей
+(`/panel/api/inbounds/addClient` и т.п.) в 3.x больше не существует —
+код их не использует.
+
+**Рекомендуемый способ авторизации — Bearer API-токен:**
+Settings → Security → API Token → Create. Токен хранится в панели как
+SHA-256-хэш и показывается только один раз в момент создания — сразу
+сохраните его в `THREEXUI_API_TOKEN`. При заданном токене логин/пароль и
+CSRF не используются вообще — это самый надёжный вариант.
+
+Cookie-режим (`THREEXUI_USERNAME`/`THREEXUI_PASSWORD`) — запасной вариант,
+если токен по какой-то причине не создать. Если авторизация по
+логину/паролю не заработает «из коробки» — точную форму запроса `/login`
+для вашей сборки панели можно посмотреть на вкладке `/panel/api-docs`
+(встроенный Swagger) → `POST /login` → Try it out, и поправить `login()` в
+`bot/services/xui_client.py` под неё.
+
 ### 3. Запуск
 
 ```bash
@@ -300,7 +321,7 @@ sudo apt install docker-compose-v2 -y
 
 - Ubuntu 22.04+
 - Docker 24+ и Docker Compose v2
-- 3x-ui с настроенным(и) VLESS Reality/WS+TLS inbound'ом(ами)
+- 3x-ui версии 3.x (проверено на 3.4.2) с настроенным(и) VLESS Reality/WS+TLS inbound'ом(ами)
 - Для ЮMoney и аналогичных провайдеров: домен с A-записью (Cloudflare Proxy OFF)
 
 ---
