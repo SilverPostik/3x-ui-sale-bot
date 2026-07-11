@@ -45,7 +45,7 @@ async def main() -> None:
             "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
-    # ── Platega webhook (plain HTTP, nginx проксирует :80 → :8080) ────────────
+    # ── Platega webhook (бот слушает 8080, nginx терминирует SSL на отдельном порту) ──
     webhook_runner = None
     if settings.ENABLE_PLATEGA and settings.WEBHOOK_HOST:
         from aiohttp import web

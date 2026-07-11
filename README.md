@@ -88,33 +88,41 @@ docker compose up -d --build
 
 ## Настройка Platega (webhook)
 
-Callback Platega принимается по обычному HTTP (без SSL) — сертификат не требуется.
-Запусти скрипт один раз на VPS, он настроит nginx-проксирование:
+Platega принимает callback **только по HTTPS с валидным сертификатом** (в отличие
+от ЮMoney, HTTP не подойдёт). Порты 443 и 8443 у тебя уже заняты VLESS-инбаундами
+3x-ui, поэтому HTTPS для вебхука вешаем на отдельный порт (по умолчанию `9443`).
 
 ```bash
 chmod +x setup_webhook.sh
-sudo ./setup_webhook.sh pay.твойдомен.ru
+sudo ./setup_webhook.sh pay.твойдомен.ru email@mail.ru
 docker compose up -d --build
 ```
 
 Скрипт автоматически:
 - проверит что домен указывает на сервер
-- настроит nginx: `:80/platega/notify` → бот на `127.0.0.1:8080`
-- откроет порт 80 в ufw
+- выпустит сертификат Let's Encrypt (через `certbot certonly --webroot`, не трогая порты 443/8443)
+- настроит nginx: `:9443 (SSL) /platega/notify` → бот на `127.0.0.1:8080`
+- откроет порт 9443 в ufw
+- настроит автообновление сертификата (cron, ежедневно в 03:00)
 - обновит `WEBHOOK_HOST` в `.env`
-- уберёт из `docker-compose.yml` порт 443 (не нужен боту — он занят 3x-ui)
 - перезапустит бота
+
+Свой порт можно задать третьим аргументом: `sudo ./setup_webhook.sh pay.домен.ru email 9443`
+(главное — не 443 и не 8443, они заняты VPN).
 
 После этого в личном кабинете Platega (Настройки → Callback URLs) укажи:
 ```
-http://pay.твойдомен.ru/platega/notify
+https://pay.твойдомен.ru:9443/platega/notify
 ```
 
 Там же в личном кабинете уточни `PLATEGA_MERCHANT_ID`, `PLATEGA_SECRET` и точный код
 способа оплаты для карточного эквайринга (`PLATEGA_METHOD_CARD`) — эти данные
 индивидуальны для каждого мерчанта.
 
-> В Cloudflare A-запись должна быть с **серой тучкой** (Proxy: OFF).
+> В Cloudflare A-запись должна быть с **серой тучкой** (Proxy: OFF) — иначе
+> сертификат Let's Encrypt не выпустится и HTTPS-запросы Platega не дойдут до сервера.
+
+
 
 ---
 
@@ -224,7 +232,7 @@ docker compose down && docker compose up -d
 Проверь `THREEXUI_URL` — должен включать путь (`/d7tCPj1V3X2KLzvTo6/`), и что панель доступна с VPS.
 
 **Platega webhook не работает:**  
-Проверь что домен резолвится (`dig pay.домен.ru`), сертификат есть (`ls /etc/letsencrypt/live/`), порт 443 открыт (`ufw allow 443`).
+Проверь что домен резолвится (`dig pay.домен.ru`), сертификат есть (`ls /etc/letsencrypt/live/`), порт вебхука открыт (`ufw allow 9443`, или тот порт, что указал при запуске `setup_webhook.sh`). ⚠️ Порт 443 занят VLESS Reality в 3x-ui — под вебхук его использовать нельзя.
 
 **`docker-compose: command not found`:**
 ```bash
