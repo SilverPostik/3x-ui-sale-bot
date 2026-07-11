@@ -1,5 +1,5 @@
-from typing import List
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List, Annotated
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 from pydantic import field_validator
 
 
@@ -22,8 +22,15 @@ class Settings(BaseSettings):
     THREEXUI_PASSWORD: str = ""
     THREEXUI_API_TOKEN: str = ""
     THREEXUI_SUB_PORT: int = 2096  # порт для ссылок подписки (не путать с портом панели)
-    REALITY_INBOUND_ID: int = 1
+    # Один или несколько inbound ID через запятую: "1" или "1,2,3".
+    # Клиент будет создан сразу во всех указанных inbound'ах (один UUID/подписка на все).
+    REALITY_INBOUND_ID: Annotated[List[int], NoDecode] = [1]
     DEFAULT_LIMIT_IP: int = 1  # max devices per subscription
+
+    # Ограничение количества пользователей с активной платной подпиской.
+    # 0 — без ограничений. При достижении лимита новым пользователям недоступна покупка
+    # (продление подписки уже существующим клиентам лимитом не блокируется).
+    MAX_ACTIVE_SUBSCRIPTIONS: int = 0
 
     # Payments
     TELEGRAM_STARS_PROVIDER_TOKEN: str = ""
@@ -42,7 +49,7 @@ class Settings(BaseSettings):
     WEBHOOK_HOST: str = ""              # https://yourdomain.com (для Platega callback)
 
     # Admin
-    ADMIN_IDS: List[int] = []
+    ADMIN_IDS: Annotated[List[int], NoDecode] = []
 
     # Support
     SUPPORT_USERNAME: str = "support"
@@ -58,6 +65,16 @@ class Settings(BaseSettings):
     def parse_admin_ids(cls, v):
         if isinstance(v, str):
             return [int(x.strip()) for x in v.split(",") if x.strip()]
+        return v
+
+    @field_validator("REALITY_INBOUND_ID", mode="before")
+    @classmethod
+    def parse_reality_inbound_id(cls, v):
+        if isinstance(v, str):
+            ids = [int(x.strip()) for x in v.split(",") if x.strip()]
+            if not ids:
+                raise ValueError("REALITY_INBOUND_ID: список не может быть пустым")
+            return ids
         return v
 
     @property

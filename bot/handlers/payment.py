@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import SettingsRepository
 from bot.services.payment_service import PaymentService
+from bot.services.subscription_service import SubscriptionService
 from bot.keyboards import plans_kb, back_to_menu_kb
 from config.texts import (
     CHOOSE_PLAN, PAYMENT_INVOICE_TITLE,
     PAYMENT_INVOICE_DESCRIPTION, PAYMENT_SUCCESS,
-    PLAN_NAMES,
+    PLAN_NAMES, NO_SLOTS_AVAILABLE,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,16 @@ PLAN_OPTIONS = [1, 3, 6, 12]
 
 @router.callback_query(lambda c: c.data == "buy")
 async def cb_buy(callback: CallbackQuery, session: AsyncSession) -> None:
+    sub_service = SubscriptionService(session)
+    if not await sub_service.has_capacity_for_new_user(callback.from_user.id):
+        await callback.message.edit_text(
+            NO_SLOTS_AVAILABLE,
+            reply_markup=back_to_menu_kb(),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     settings_repo = SettingsRepository(session)
     prices = {m: await settings_repo.get_plan_price(m) for m in PLAN_OPTIONS}
     await callback.message.edit_text(

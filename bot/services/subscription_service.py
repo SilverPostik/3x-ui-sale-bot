@@ -21,6 +21,21 @@ class SubscriptionService:
     async def get_active(self, user_id: int) -> Optional[Subscription]:
         return await self.sub_repo.get_active(user_id)
 
+    async def has_capacity_for_new_user(self, user_id: int) -> bool:
+        """
+        Проверяет, можно ли создать НОВУЮ подписку с учётом MAX_ACTIVE_SUBSCRIPTIONS.
+        0 — лимит не задан (без ограничений).
+        Продление уже существующей у пользователя подписки лимитом не блокируется —
+        проверка актуальна только для тех, у кого ещё нет ни одной записи подписки.
+        """
+        if settings.MAX_ACTIVE_SUBSCRIPTIONS <= 0:
+            return True
+        existing = await self.sub_repo.get_last(user_id)
+        if existing is not None:
+            return True
+        active_count = await self.sub_repo.count_active()
+        return active_count < settings.MAX_ACTIVE_SUBSCRIPTIONS
+
     async def create_subscription(
         self,
         user_id: int,
@@ -28,7 +43,14 @@ class SubscriptionService:
     ) -> Optional[Subscription]:
         """
         Создаёт нового клиента в 3x-ui и запись в БД.
+        Клиент создаётся сразу во всех inbound'ах из settings.REALITY_INBOUND_ID.
         """
+        if not await self.has_capacity_for_new_user(user_id):
+            logger.warning(
+                f"MAX_ACTIVE_SUBSCRIPTIONS limit reached, rejecting new subscription for user {user_id}"
+            )
+            return None
+
         expires_at = datetime.now(timezone.utc) + timedelta(days=30 * plan_months)
         expire_ms = int(expires_at.timestamp() * 1000)
 
@@ -37,14 +59,15 @@ class SubscriptionService:
         client_id = str(uuid.uuid4())
         # subId явно передаём — 3x-ui не генерирует его сам через API (issue #3237)
         sub_id = uuid.uuid4().hex[:16]
+        inbound_ids = settings.REALITY_INBOUND_ID
 
         logger.info(
             f"Creating 3x-ui client: user={user_id} email={email} "
-            f"sub_id={sub_id} expire={expires_at.isoformat()}"
+            f"sub_id={sub_id} expire={expires_at.isoformat()} inbounds={inbound_ids}"
         )
 
         result_id = await xui_client.add_client(
-            inbound_id=settings.REALITY_INBOUND_ID,
+            inbound_ids=inbound_ids,
             email=email,
             expire_ms=expire_ms,
             sub_id=sub_id,
@@ -66,7 +89,7 @@ class SubscriptionService:
             plan_months=plan_months,
             expires_at=expires_at,
             xui_client_id=client_id,
-            xui_inbound_id=settings.REALITY_INBOUND_ID,
+            xui_inbound_id=Subscription.format_inbound_ids(inbound_ids),
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
             inbound_type="vless_reality",
@@ -87,14 +110,15 @@ class SubscriptionService:
         email = f"tg{user_id}"
         client_id = str(uuid.uuid4())
         sub_id = uuid.uuid4().hex[:16]
+        inbound_ids = settings.REALITY_INBOUND_ID
 
         logger.info(
             f"Creating 3x-ui promo client: user={user_id} email={email} "
-            f"sub_id={sub_id} expire={expires_at.isoformat()}"
+            f"sub_id={sub_id} expire={expires_at.isoformat()} inbounds={inbound_ids}"
         )
 
         result_id = await xui_client.add_client(
-            inbound_id=settings.REALITY_INBOUND_ID,
+            inbound_ids=inbound_ids,
             email=email,
             expire_ms=expire_ms,
             sub_id=sub_id,
@@ -116,7 +140,7 @@ class SubscriptionService:
             plan_months=0,
             expires_at=expires_at,
             xui_client_id=client_id,
-            xui_inbound_id=settings.REALITY_INBOUND_ID,
+            xui_inbound_id=Subscription.format_inbound_ids(inbound_ids),
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
             inbound_type="vless_reality",
@@ -151,7 +175,7 @@ class SubscriptionService:
         )
 
         ok = await xui_client.update_client(
-            inbound_id=sub.xui_inbound_id,
+            inbound_ids=sub.inbound_ids,
             client_id=sub.xui_client_id,
             email=email,
             expire_ms=expire_ms,
@@ -180,7 +204,7 @@ class SubscriptionService:
         for sub in expired:
             email = f"tg{sub.user_id}"
             ok = await xui_client.disable_client(
-                inbound_id=sub.xui_inbound_id,
+                inbound_ids=sub.inbound_ids,
                 client_id=sub.xui_client_id,
                 email=email,
                 sub_id=sub.xui_sub_id or "",

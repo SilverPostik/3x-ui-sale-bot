@@ -287,7 +287,7 @@ class XUIClient:
 
     async def add_client(
         self,
-        inbound_id: int,
+        inbound_ids: list[int],
         email: str,
         expire_ms: int,
         sub_id: str,
@@ -297,7 +297,10 @@ class XUIClient:
         flow: str = "xtls-rprx-vision",
     ) -> Optional[str]:
         """
-        Добавляет нового клиента и привязывает его к inbound.
+        Добавляет нового клиента сразу во все указанные inbound'ы (общий UUID/subId),
+        используя новую API-форму /panel/api/clients/add с полем "inboundIds".
+        Если основной эндпоинт недоступен — fallback на legacy addClient
+        по каждому inbound'у отдельно (там нет батч-режима, только один "id" за раз).
         Возвращает client_id (UUID) при успехе, None при ошибке.
         """
         cid = client_id or str(uuid.uuid4())
@@ -316,24 +319,35 @@ class XUIClient:
         }
         payload = {
             "client": client,
-            "inboundIds": [inbound_id],
+            "inboundIds": inbound_ids,
         }
         logger.debug(f"3x-ui add_client payload: {json.dumps(payload, ensure_ascii=False)}")
         resp = await self._request("POST", "/panel/api/clients/add", json_body=payload)
         if resp and resp.get("success"):
-            logger.info(f"3x-ui client created: id={cid} email={email} sub_id={sub_id}")
+            logger.info(
+                f"3x-ui client created: id={cid} email={email} sub_id={sub_id} "
+                f"inbounds={inbound_ids}"
+            )
             return cid
 
         logger.warning(f"3x-ui add_client primary endpoint failed for email={email}: {resp}")
-        if await self._try_legacy_add_client(inbound_id, client):
+
+        # Legacy fallback: батч-эндпоинта нет, добавляем в каждый inbound по отдельности
+        all_ok = True
+        for iid in inbound_ids:
+            if not await self._try_legacy_add_client(iid, client):
+                all_ok = False
+                logger.error(f"3x-ui legacy addClient failed for inbound={iid} email={email}")
+
+        if all_ok:
             return cid
 
-        logger.error(f"3x-ui add_client failed for email={email}: {resp}")
+        logger.error(f"3x-ui add_client failed for email={email} inbounds={inbound_ids}")
         return None
 
     async def update_client(
         self,
-        inbound_id: int,
+        inbound_ids: list[int],
         client_id: str,
         email: str,
         expire_ms: int,
@@ -359,17 +373,24 @@ class XUIClient:
             return True
 
         logger.warning(f"3x-ui update_client primary endpoint failed for email={email}: {resp}")
-        return await self._try_legacy_update_client(inbound_id, client)
+
+        # Legacy fallback: обновляем клиента в каждом inbound'е отдельно
+        all_ok = True
+        for iid in inbound_ids:
+            if not await self._try_legacy_update_client(iid, client):
+                all_ok = False
+                logger.error(f"3x-ui legacy updateClient failed for inbound={iid} email={email}")
+        return all_ok
 
     async def disable_client(
         self,
-        inbound_id: int,
+        inbound_ids: list[int],
         client_id: str,
         email: str,
         sub_id: str,
     ) -> bool:
         return await self.update_client(
-            inbound_id=inbound_id,
+            inbound_ids=inbound_ids,
             client_id=client_id,
             email=email,
             expire_ms=0,

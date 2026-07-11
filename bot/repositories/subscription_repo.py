@@ -34,7 +34,7 @@ class SubscriptionRepository:
         plan_months: int,
         expires_at: datetime,
         xui_client_id: str,
-        xui_inbound_id: int,
+        xui_inbound_id: str,
         subscription_url: str,
         xui_sub_id: str = "",
         inbound_type: str = "vless_reality",

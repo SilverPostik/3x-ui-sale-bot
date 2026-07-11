@@ -48,8 +48,14 @@ THREEXUI_URL=https://ip:порт/путь/
 THREEXUI_USERNAME=логин
 THREEXUI_PASSWORD=пароль
 THREEXUI_SUB_PORT=2096
-REALITY_INBOUND_ID=1
+# Один inbound: REALITY_INBOUND_ID=1
+# Несколько — клиент создаётся сразу во всех, с общим UUID и одной ссылкой подписки:
+REALITY_INBOUND_ID=1,2,3
 DEFAULT_LIMIT_IP=1
+
+# Лимит пользователей с активной платной подпиской (0 = без ограничений).
+# Продление уже действующей подписки лимитом не блокируется — только новые покупки.
+MAX_ACTIVE_SUBSCRIPTIONS=0
 
 # Telegram Stars (токен не нужен, оставить пустым)
 TELEGRAM_STARS_PROVIDER_TOKEN=

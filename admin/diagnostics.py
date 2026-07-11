@@ -35,23 +35,33 @@ async def cmd_ping(message: Message) -> None:
         return
 
     inbounds = await xui_client.get_inbounds()
-    target = next((i for i in inbounds if i.get("id") == settings.REALITY_INBOUND_ID), None)
+    found = {i.get("id"): i for i in inbounds if i.get("id") in settings.REALITY_INBOUND_ID}
+    missing = [iid for iid in settings.REALITY_INBOUND_ID if iid not in found]
 
-    status = "✅" if target else "⚠️"
-    inbound_info = (
-        f"✅ Inbound #{settings.REALITY_INBOUND_ID} найден: "
-        f"<b>{target.get('remark', '—')}</b> port={target.get('port')}"
-        if target
-        else f"⚠️ Inbound #{settings.REALITY_INBOUND_ID} НЕ найден!\n"
-             f"Доступные inbound ID: {[i.get('id') for i in inbounds]}"
-    )
+    if found and not missing:
+        status = "✅"
+    elif found:
+        status = "⚠️"
+    else:
+        status = "❌"
+
+    lines = []
+    for iid in settings.REALITY_INBOUND_ID:
+        inb = found.get(iid)
+        if inb:
+            lines.append(f"✅ #{iid}: <b>{inb.get('remark', '—')}</b> port={inb.get('port')}")
+        else:
+            lines.append(f"⚠️ #{iid}: НЕ найден")
+    inbound_info = "\n".join(lines)
+    if missing:
+        inbound_info += f"\n\nДоступные inbound ID: {[i.get('id') for i in inbounds]}"
 
     await msg.edit_text(
         f"{status} <b>3x-ui соединение</b>\n\n"
         f"URL: <code>{settings.THREEXUI_URL}</code>\n"
         f"Авторизация: ✅\n"
-        f"Inbound: {inbound_info}\n"
-        f"Всего inbound'ов: {len(inbounds)}",
+        f"Inbound'ы:\n{inbound_info}\n\n"
+        f"Всего inbound'ов в панели: {len(inbounds)}",
         parse_mode="HTML",
     )
 

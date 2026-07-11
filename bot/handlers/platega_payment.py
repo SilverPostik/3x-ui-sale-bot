@@ -16,8 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.repositories import SettingsRepository
 from bot.services.payment_service import PaymentService
 from bot.services.platega_client import platega_client, new_external_id, PlategaError
+from bot.services.subscription_service import SubscriptionService
 from config.settings import settings
-from config.texts import CHOOSE_PLAN, PLAN_NAMES, PAYMENT_SUCCESS
+from config.texts import CHOOSE_PLAN, PLAN_NAMES, PAYMENT_SUCCESS, NO_SLOTS_AVAILABLE
 from bot.keyboards import back_to_menu_kb
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,16 @@ async def cb_buy_platega(callback: CallbackQuery, session: AsyncSession) -> None
     method = callback.data.removeprefix("buy_platega_")
     if method not in PLATEGA_METHODS:
         await callback.answer("Неизвестный способ оплаты.", show_alert=True)
+        return
+
+    sub_service = SubscriptionService(session)
+    if not await sub_service.has_capacity_for_new_user(callback.from_user.id):
+        await callback.message.edit_text(
+            NO_SLOTS_AVAILABLE,
+            reply_markup=back_to_menu_kb(),
+            parse_mode="HTML",
+        )
+        await callback.answer()
         return
 
     _, method_title, _ = PLATEGA_METHODS[method]
