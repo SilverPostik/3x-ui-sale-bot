@@ -24,11 +24,9 @@ services:
         condition: service_healthy
     env_file: .env
     ports:
-      - "80:443"     # HTTPS webhook Platega (после setup_webhook.sh)
-      - "8080:8080"  # HTTP fallback (если сертификата нет)
+      - "127.0.0.1:8080:8080"  # webhook Platega — доступен только локально, наружу торчит через nginx :80
     volumes:
       - .:/app
-      - /etc/letsencrypt:/etc/letsencrypt:ro  # сертификаты read-only
     command: >
       sh -c "
         cd /app &&
