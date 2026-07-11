@@ -45,22 +45,22 @@ async def main() -> None:
             "Проверьте THREEXUI_URL, THREEXUI_USERNAME, THREEXUI_PASSWORD или THREEXUI_API_TOKEN в .env"
         )
 
-    # ── YooMoney webhook (plain HTTP, SSL терминируется на nginx снаружи) ─────
+    # ── Platega webhook (plain HTTP, nginx проксирует :80 → :8080) ────────────
     webhook_runner = None
-    if settings.ENABLE_YOOMONEY and settings.WEBHOOK_HOST:
+    if settings.ENABLE_PLATEGA and settings.WEBHOOK_HOST:
         from aiohttp import web
-        from bot.webhook.yoomoney_webhook import setup_yoomoney_webhook
+        from bot.webhook.platega_webhook import setup_platega_webhook
 
         app = web.Application()
         app["bot"] = bot
-        setup_yoomoney_webhook(app)
+        setup_platega_webhook(app)
 
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", 8080)
         await site.start()
         webhook_runner = runner
-        logger.info("YooMoney webhook listening on :8080 (nginx proxies HTTPS → here)")
+        logger.info("Platega webhook listening on :8080 (nginx proxies HTTPS → here)")
 
     logger.info("Bot started, polling...")
     try:

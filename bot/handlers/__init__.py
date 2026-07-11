@@ -1,5 +1,5 @@
 from aiogram import Router
-from bot.handlers import start, profile, connect, instruction, support, promo, payment, yoomoney_payment
+from bot.handlers import start, profile, connect, instruction, support, promo, payment, platega_payment
 
 
 def get_main_router() -> Router:
@@ -11,5 +11,5 @@ def get_main_router() -> Router:
     router.include_router(support.router)
     router.include_router(promo.router)
     router.include_router(payment.router)
-    router.include_router(yoomoney_payment.router)
+    router.include_router(platega_payment.router)
     return router

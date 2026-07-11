@@ -35,7 +35,7 @@ class SettingsRepository:
         return int(value)
 
     async def get_plan_price_rub(self, months: int) -> int:
-        """Цена в рублях (ЮMoney)"""
+        """Цена в рублях (Platega — СБП/карта/крипта)"""
         key = f"price_rub_{months}"
         value = await self.get(key, DEFAULT_PRICES_RUB.get(key, "149"))
         return int(value)

@@ -297,7 +297,7 @@ async def cb_admin_finance(callback: CallbackQuery, session: AsyncSession) -> No
         f"  Сегодня: {today_s} ⭐\n"
         f"  Месяц:   {month_s} ⭐\n"
         f"  Всего:   {total_s} ⭐\n\n"
-        f"<b>ЮMoney ₽</b>\n"
+        f"<b>Platega ₽ (СБП/карта/крипта)</b>\n"
         f"  Сегодня: {today_r} ₽\n"
         f"  Месяц:   {month_r} ₽\n"
         f"  Всего:   {total_r} ₽"

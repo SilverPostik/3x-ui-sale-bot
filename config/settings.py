@@ -27,10 +27,19 @@ class Settings(BaseSettings):
 
     # Payments
     TELEGRAM_STARS_PROVIDER_TOKEN: str = ""
-    YOOMONEY_WALLET: str = ""         # Номер кошелька YooMoney получателя
-    YOOMONEY_SECRET: str = ""          # Секрет для проверки уведомлений
-    ENABLE_YOOMONEY: bool = False      # Включить ЮMoney как способ оплаты
-    WEBHOOK_HOST: str = ""             # https://yourdomain.com (для YooMoney webhook)
+
+    # Platega.io (СБП, карточный эквайринг, криптовалюта)
+    ENABLE_PLATEGA: bool = False        # Включить Platega как способ оплаты
+    PLATEGA_MERCHANT_ID: str = ""       # X-MerchantId (выдаётся менеджером/ЛК Platega)
+    PLATEGA_SECRET: str = ""            # X-Secret (выдаётся менеджером/ЛК Platega)
+    # Коды способов оплаты (PaymentMethodInt в API Platega).
+    # 2 (СБП) и 13 (крипта) подтверждены документацией Platega.
+    # Код карточного эквайринга индивидуален для мерчанта — уточните у
+    # вашего менеджера Platega и при необходимости измените значение ниже.
+    PLATEGA_METHOD_SBP: int = 2
+    PLATEGA_METHOD_CARD: int = 1
+    PLATEGA_METHOD_CRYPTO: int = 13
+    WEBHOOK_HOST: str = ""              # https://yourdomain.com (для Platega callback)
 
     # Admin
     ADMIN_IDS: List[int] = []

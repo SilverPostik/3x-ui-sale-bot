@@ -1,7 +1,7 @@
 # Продажник — VPN Telegram Bot
 
 Production-ready Telegram бот для продажи VPN-подписок через панель **3x-ui**.  
-Протокол: **VLESS + Reality**. Оплата: **Telegram Stars** и **ЮMoney**.
+Протокол: **VLESS + Reality**. Оплата: **Telegram Stars**, **СБП**, **банковские карты** и **криптовалюта** (Platega).
 
 ---
 
@@ -54,10 +54,13 @@ DEFAULT_LIMIT_IP=1
 # Telegram Stars (токен не нужен, оставить пустым)
 TELEGRAM_STARS_PROVIDER_TOKEN=
 
-# ЮMoney (необязательно)
-ENABLE_YOOMONEY=false
-YOOMONEY_WALLET=номер_кошелька
-YOOMONEY_SECRET=секрет_уведомлений
+# Platega.io — СБП, банковские карты, криптовалюта (необязательно)
+ENABLE_PLATEGA=false
+PLATEGA_MERCHANT_ID=id_из_ЛК_Platega
+PLATEGA_SECRET=секрет_из_ЛК_Platega
+PLATEGA_METHOD_SBP=2
+PLATEGA_METHOD_CARD=1
+PLATEGA_METHOD_CRYPTO=13
 WEBHOOK_HOST=https://pay.твойдомен.ru
 
 # Администраторы (через запятую, без скобок)
@@ -83,26 +86,33 @@ docker compose up -d --build
 
 ---
 
-## Настройка ЮMoney (webhook)
+## Настройка Platega (webhook)
 
-ЮMoney требует HTTPS с валидным сертификатом. Запусти скрипт один раз на VPS:
+Callback Platega принимается по обычному HTTP (без SSL) — сертификат не требуется.
+Запусти скрипт один раз на VPS, он настроит nginx-проксирование:
 
 ```bash
 chmod +x setup_webhook.sh
-sudo ./setup_webhook.sh pay.твойдомен.ru email@mail.ru
+sudo ./setup_webhook.sh pay.твойдомен.ru
 docker compose up -d --build
 ```
 
 Скрипт автоматически:
 - проверит что домен указывает на сервер
-- установит certbot и выпустит SSL-сертификат
+- настроит nginx: `:80/platega/notify` → бот на `127.0.0.1:8080`
+- откроет порт 80 в ufw
 - обновит `WEBHOOK_HOST` в `.env`
-- добавит автообновление сертификата в cron
+- уберёт из `docker-compose.yml` порт 443 (не нужен боту — он занят 3x-ui)
+- перезапустит бота
 
-После этого в [настройках ЮMoney](https://yoomoney.ru/transfer/myservices/http-notification) укажи:
+После этого в личном кабинете Platega (Настройки → Callback URLs) укажи:
 ```
-https://pay.твойдомен.ru/yoomoney/notify
+http://pay.твойдомен.ru/platega/notify
 ```
+
+Там же в личном кабинете уточни `PLATEGA_MERCHANT_ID`, `PLATEGA_SECRET` и точный код
+способа оплаты для карточного эквайринга (`PLATEGA_METHOD_CARD`) — эти данные
+индивидуальны для каждого мерчанта.
 
 > В Cloudflare A-запись должна быть с **серой тучкой** (Proxy: OFF).
 
@@ -116,8 +126,8 @@ https://pay.твойдомен.ru/yoomoney/notify
 │   ├── keyboards/      # Inline-клавиатуры
 │   ├── middlewares/    # DB-сессия, авторегистрация пользователей
 │   ├── repositories/   # Слой БД (Repository Pattern)
-│   ├── services/       # Бизнес-логика: платежи, подписки, 3x-ui, ЮMoney
-│   └── webhook/        # aiohttp-обработчик ЮMoney уведомлений
+│   ├── services/       # Бизнес-логика: платежи, подписки, 3x-ui, Platega
+│   └── webhook/        # aiohttp-обработчик Platega callback
 ├── admin/              # Панель администратора
 ├── scheduler/          # Ежедневные задачи (уведомления, отключение)
 ├── database/
@@ -142,7 +152,7 @@ https://pay.твойдомен.ru/yoomoney/notify
 - **Подключиться** — Subscription URL + QR-код
 - **Инструкция** — HAPP для Android / iOS / Windows / macOS
 - **Купить VPN** — тарифы 1/3/6/12 месяцев
-- **Оплата** — Telegram Stars или ЮMoney (карта/кошелёк)
+- **Оплата** — Telegram Stars или Platega (СБП / карта / криптовалюта)
 - **Промокод** — скидка или бесплатные дни
 
 ### Администратор (`/admin`)
@@ -167,14 +177,15 @@ https://pay.твойдомен.ru/yoomoney/notify
 ```
 Выбор тарифа → Выбор способа оплаты
                     │
-          ┌─────────┴──────────┐
-     Telegram Stars         ЮMoney
-          │                    │
-   invoice_payload        Quickpay URL
-          │                    │
-   successful_payment     webhook POST
-          │                    │
-          └─────────┬──────────┘
+     ┌──────────────┼───────────────────────────┐
+Telegram Stars     СБП / Карта / Крипта (Platega)
+     │                            │
+invoice_payload        POST /transaction/process
+     │                       (redirect URL)
+successful_payment       webhook POST /platega/notify
+     │                    (либо ручная проверка через
+     │                     GET /transaction/{id})
+     └──────────────┬───────────────────────────┘
                PaymentService
                .confirm_payment()
                     │
@@ -184,14 +195,14 @@ https://pay.твойдомен.ru/yoomoney/notify
               3x-ui клиент создан/продлён
 ```
 
-Модель `Payment` единая для обоих провайдеров:
+Модель `Payment` единая для всех провайдеров:
 
 | Поле | Описание |
 |---|---|
-| `provider` | `telegram_stars` или `yoomoney` |
+| `provider` | `telegram_stars`, `platega_sbp`, `platega_card` или `platega_crypto` |
 | `currency` | `XTR` или `RUB` |
 | `amount` | сумма (звёзды или рубли) |
-| `external_payment_id` | charge_id (Stars) или operation_id (ЮMoney) |
+| `external_payment_id` | charge_id (Stars) или transactionId (Platega) |
 | `status` | `pending` → `paid` |
 
 ---
@@ -212,7 +223,7 @@ docker compose down && docker compose up -d
 **3x-ui не подключается:**  
 Проверь `THREEXUI_URL` — должен включать путь (`/d7tCPj1V3X2KLzvTo6/`), и что панель доступна с VPS.
 
-**ЮMoney webhook не работает:**  
+**Platega webhook не работает:**  
 Проверь что домен резолвится (`dig pay.домен.ru`), сертификат есть (`ls /etc/letsencrypt/live/`), порт 443 открыт (`ufw allow 443`).
 
 **`docker-compose: command not found`:**
@@ -227,7 +238,7 @@ sudo apt install docker-compose-v2 -y
 - Ubuntu 22.04+
 - Docker 24+ и Docker Compose v2
 - 3x-ui с настроенным VLESS Reality inbound
-- Для ЮMoney: домен с A-записью (Cloudflare Proxy OFF)
+- Для Platega: домен с A-записью (Cloudflare Proxy OFF)
 
 ---
 

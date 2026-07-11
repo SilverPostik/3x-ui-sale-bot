@@ -22,7 +22,7 @@ BOT_PORT=8080
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Настройка webhook для ${DOMAIN}"
-echo "  Схема: YooMoney → nginx :80 → бот :${BOT_PORT}"
+echo "  Схема: Platega → nginx :80 → бот :${BOT_PORT}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -48,14 +48,14 @@ else
     ok "DNS: ${DOMAIN} → ${MY_IP}"
 fi
 
-# ─── 4. nginx: проксируем /yoomoney/notify на бота ───────────────────────────
-cat > /etc/nginx/sites-available/yoomoney << EOF
+# ─── 4. nginx: проксируем /platega/notify на бота ────────────────────────────
+cat > /etc/nginx/sites-available/platega << EOF
 server {
     listen 80;
     server_name ${DOMAIN};
 
     # Только webhook — всё остальное не трогаем
-    location /yoomoney/notify {
+    location /platega/notify {
         proxy_pass http://127.0.0.1:${BOT_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -69,11 +69,11 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/yoomoney /etc/nginx/sites-enabled/yoomoney
+ln -sf /etc/nginx/sites-available/platega /etc/nginx/sites-enabled/platega
 # Убираем дефолтный сайт если есть
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl enable nginx && systemctl reload nginx
-ok "nginx настроен: :80/yoomoney/notify → :${BOT_PORT}"
+ok "nginx настроен: :80/platega/notify → :${BOT_PORT}"
 
 # ─── 5. ufw ──────────────────────────────────────────────────────────────────
 if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
@@ -82,7 +82,7 @@ if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
 fi
 
 # ─── 6. Обновляем .env ───────────────────────────────────────────────────────
-# YooMoney webhook URL будет http (без SSL) — это нормально для HTTP-уведомлений
+# Platega webhook URL будет http (без SSL) — это нормально, callback шлётся по HTTP
 WEBHOOK_URL="http://${DOMAIN}"
 if [ -f "$ENV_FILE" ]; then
     if grep -q "^WEBHOOK_HOST=" "$ENV_FILE"; then
@@ -120,8 +120,8 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ok "Всё готово!"
 echo ""
-echo "  Укажи в YooMoney → Уведомления HTTP:"
-echo "  http://${DOMAIN}/yoomoney/notify"
+echo "  Укажи в личном кабинете Platega → Настройки → Callback URLs:"
+echo "  http://${DOMAIN}/platega/notify"
 echo ""
 echo "  ⚠️  Порты на сервере:"
 echo "   :443  — VLESS инбаунд (3x-ui, не трогаем)"
