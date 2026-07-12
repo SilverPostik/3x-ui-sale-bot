@@ -48,28 +48,32 @@ class PromocodeService:
             if used:
                 return PromocodeResult(False, error="already_used")
 
-        await self.promo_repo.record_activation(promo.id, user_id)
-        promo.activations_count += 1
-        await self.promo_repo.update(promo)
-
         if promo.type == "days":
+            # Активацию засчитываем ТОЛЬКО после того, как подписка реально
+            # создана/продлена в 3x-ui — иначе при сбое 3x-ui промокод сгорает
+            # впустую, а пользователь так и остаётся без подписки.
             sub = await self.sub_repo.get_active(user_id)
             if sub:
                 sub.expires_at = max(sub.expires_at, now) + timedelta(days=promo.value)
                 await self.sub_repo.update(sub)
-                return PromocodeResult(True, days_added=promo.value)
+            else:
+                new_sub = await self.subscription_service.create_promo_subscription(
+                    user_id=user_id,
+                    days=promo.value,
+                )
+                if not new_sub:
+                    logger.error(f"Promocode days activation failed to create subscription for user {user_id}")
+                    return PromocodeResult(False, error="server_error")
 
-            # Если нет активной подписки, создаем новую через 3x-ui
-            new_sub = await self.subscription_service.create_promo_subscription(
-                user_id=user_id,
-                days=promo.value,
-            )
-            if new_sub:
-                return PromocodeResult(True, days_added=promo.value)
-            logger.error(f"Promocode days activation failed to create subscription for user {user_id}")
-            return PromocodeResult(False, error="invalid")
+            await self.promo_repo.record_activation(promo.id, user_id)
+            promo.activations_count += 1
+            await self.promo_repo.update(promo)
+            return PromocodeResult(True, days_added=promo.value)
 
         if promo.type == "discount":
+            await self.promo_repo.record_activation(promo.id, user_id)
+            promo.activations_count += 1
+            await self.promo_repo.update(promo)
             return PromocodeResult(True, discount_percent=promo.value)
 
         return PromocodeResult(False, error="invalid")

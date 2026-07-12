@@ -2,6 +2,7 @@ from aiogram import Router
 from aiogram.types import CallbackQuery
 
 from bot.keyboards import instruction_kb, back_to_menu_kb
+from bot.utils.tg import safe_edit_text
 from config.texts import INSTRUCTION_CHOOSE_PLATFORM, INSTRUCTIONS
 
 router = Router()
@@ -9,7 +10,8 @@ router = Router()
 
 @router.callback_query(lambda c: c.data == "instruction")
 async def cb_instruction(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         INSTRUCTION_CHOOSE_PLATFORM,
         reply_markup=instruction_kb(),
         parse_mode="HTML",
@@ -24,7 +26,8 @@ async def cb_instruction_platform(callback: CallbackQuery) -> None:
     if not text:
         await callback.answer("Инструкция не найдена.", show_alert=True)
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         text,
         reply_markup=back_to_menu_kb(),
         parse_mode="HTML",

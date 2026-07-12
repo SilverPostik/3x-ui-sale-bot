@@ -8,7 +8,7 @@ from bot.services.promocode_service import PromocodeService
 from bot.keyboards import back_to_menu_kb
 from config.texts import (
     PROMO_ENTER, PROMO_INVALID, PROMO_EXPIRED,
-    PROMO_LIMIT, PROMO_ALREADY_USED,
+    PROMO_LIMIT, PROMO_ALREADY_USED, PROMO_SERVER_ERROR,
     PROMO_SUCCESS_DAYS, PROMO_SUCCESS_DISCOUNT,
 )
 
@@ -39,6 +39,7 @@ async def handle_promo_code(message: Message, state: FSMContext, session: AsyncS
             "expired": PROMO_EXPIRED,
             "limit": PROMO_LIMIT,
             "already_used": PROMO_ALREADY_USED,
+            "server_error": PROMO_SERVER_ERROR,
         }
         text = error_map.get(result.error, PROMO_INVALID)
     elif result.days_added:

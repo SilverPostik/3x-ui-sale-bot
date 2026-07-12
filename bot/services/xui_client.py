@@ -261,28 +261,54 @@ class XUIClient:
         """
         return json.dumps({"clients": clients})
 
-    async def _try_legacy_add_client(self, inbound_id: int, client: dict) -> bool:
+    async def _try_legacy_add_client(self, inbound_id: int, client: dict, retries: int = 2) -> bool:
+        """
+        3x-ui нередко отдаёт пустой ответ на addClient при конкурентной записи
+        в конфиг (баг #3052/#3236) — _request уже ретраит пустой ответ внутри
+        одного вызова, но здесь добавлена ещё одна попытка с паузой поверх,
+        т.к. на практике одного цикла ретраев иногда не хватает под нагрузкой.
+        """
         payload = {
             "id": inbound_id,
             "settings": self._make_client_settings_str([client]),
         }
-        resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
-        if resp and resp.get("success"):
-            logger.info("3x-ui legacy addClient succeeded")
-            return True
-        logger.debug(f"3x-ui legacy addClient failed: {resp}")
+        for attempt in range(1, retries + 2):
+            resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
+            if resp and resp.get("success"):
+                logger.info(f"3x-ui legacy addClient succeeded (inbound={inbound_id})")
+                return True
+            logger.debug(f"3x-ui legacy addClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if attempt < retries + 1:
+                await asyncio.sleep(2.0)
         return False
 
-    async def _try_legacy_update_client(self, inbound_id: int, client: dict) -> bool:
+    async def _try_legacy_update_client(self, inbound_id: int, client: dict, retries: int = 2) -> bool:
         payload = {
             "id": inbound_id,
             "settings": self._make_client_settings_str([client]),
         }
-        resp = await self._request("POST", "/panel/api/inbounds/updateClient", json_body=payload)
-        if resp and resp.get("success"):
-            logger.info("3x-ui legacy updateClient succeeded")
-            return True
-        logger.debug(f"3x-ui legacy updateClient failed: {resp}")
+        for attempt in range(1, retries + 2):
+            resp = await self._request("POST", "/panel/api/inbounds/updateClient", json_body=payload)
+            if resp and resp.get("success"):
+                logger.info(f"3x-ui legacy updateClient succeeded (inbound={inbound_id})")
+                return True
+            logger.debug(f"3x-ui legacy updateClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if attempt < retries + 1:
+                await asyncio.sleep(2.0)
+        return False
+
+    async def _try_legacy_delete_client(self, inbound_id: int, client_id: str, retries: int = 2) -> bool:
+        for attempt in range(1, retries + 2):
+            resp = await self._request(
+                "POST",
+                f"/panel/api/inbounds/{inbound_id}/delClient/{client_id}",
+            )
+            if resp and resp.get("success"):
+                logger.info(f"3x-ui legacy delClient succeeded (inbound={inbound_id})")
+                return True
+            logger.debug(f"3x-ui legacy delClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if attempt < retries + 1:
+                await asyncio.sleep(2.0)
         return False
 
     async def add_client(
@@ -333,14 +359,37 @@ class XUIClient:
         logger.warning(f"3x-ui add_client primary endpoint failed for email={email}: {resp}")
 
         # Legacy fallback: батч-эндпоинта нет, добавляем в каждый inbound по отдельности
-        all_ok = True
-        for iid in inbound_ids:
-            if not await self._try_legacy_add_client(iid, client):
-                all_ok = False
+        succeeded: list[int] = []
+        for idx, iid in enumerate(inbound_ids):
+            if idx > 0:
+                # небольшая пауза снижает конкуренцию за запись в конфиг 3x-ui
+                # между последовательными вызовами addClient по разным inbound'ам
+                await asyncio.sleep(0.5)
+            if await self._try_legacy_add_client(iid, client):
+                succeeded.append(iid)
+            else:
                 logger.error(f"3x-ui legacy addClient failed for inbound={iid} email={email}")
 
-        if all_ok:
+        if len(succeeded) == len(inbound_ids):
             return cid
+
+        # Частичный успех — самое опасное состояние: клиент реально создан в части
+        # inbound'ов, но не во всех. Если оставить как есть, запись в БД не создастся
+        # (мы вернём None), а email/UUID останется занят в 3x-ui — повторная попытка
+        # создать того же клиента будет падать из-за конфликта email. Поэтому откатываем
+        # то, что успело создаться, чтобы следующая попытка стартовала с чистого листа.
+        if succeeded:
+            logger.warning(
+                f"3x-ui add_client partial failure for email={email}: "
+                f"succeeded={succeeded}, failed={[i for i in inbound_ids if i not in succeeded]}. "
+                f"Rolling back succeeded inbounds..."
+            )
+            rolled_back = await self.delete_client(cid, inbound_ids=succeeded)
+            if not rolled_back:
+                logger.error(
+                    f"3x-ui rollback FAILED for email={email} client_id={cid} inbounds={succeeded}. "
+                    f"Клиент мог остаться висеть в панели — проверьте вручную по email={email}."
+                )
 
         logger.error(f"3x-ui add_client failed for email={email} inbounds={inbound_ids}")
         return None
@@ -398,12 +447,31 @@ class XUIClient:
             enable=False,
         )
 
-    async def delete_client(self, inbound_id: int, client_id: str) -> bool:
+    async def delete_client(self, client_id: str, inbound_ids: Optional[list[int]] = None) -> bool:
+        """
+        Удаляет клиента по UUID. Основной эндпоинт (клиент по всем inbound'ам сразу).
+        Если он недоступен и передан inbound_ids — fallback на legacy delClient
+        по каждому inbound'у отдельно (используется, например, для отката
+        частично успевшего multi-inbound add_client).
+        """
         resp = await self._request(
             "POST",
             f"/panel/api/clients/del/{client_id}",
         )
-        return bool(resp and resp.get("success"))
+        if resp and resp.get("success"):
+            return True
+
+        if not inbound_ids:
+            logger.warning(f"3x-ui delete_client primary endpoint failed, client_id={client_id}: {resp}")
+            return False
+
+        logger.warning(f"3x-ui delete_client primary endpoint failed for client_id={client_id}: {resp}")
+        all_ok = True
+        for iid in inbound_ids:
+            if not await self._try_legacy_delete_client(iid, client_id):
+                all_ok = False
+                logger.error(f"3x-ui legacy delClient failed for inbound={iid} client_id={client_id}")
+        return all_ok
 
     async def get_client_stats(self, email: str) -> Optional[dict]:
         resp = await self._request(
