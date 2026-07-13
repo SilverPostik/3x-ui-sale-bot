@@ -252,6 +252,29 @@ class XUIClient:
             return resp.get("obj")
         return None
 
+    async def find_client_by_email(self, email: str, inbound_ids: list[int]) -> Optional[str]:
+        """
+        Ищет клиента с данным email среди указанных inbound'ов и возвращает его UUID,
+        если найден. Нужно, чтобы автоматически подчищать "хвосты" — клиентов,
+        оставшихся в панели после ранее неудачной (частичной) попытки создания,
+        из-за которых повторное создание валится с ошибкой "email already exists".
+        """
+        for iid in inbound_ids:
+            inbound = await self.get_inbound(iid)
+            if not inbound:
+                continue
+            raw = inbound.get("settings")
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                continue
+            for c in (parsed.get("clients") or []):
+                if c.get("email") == email:
+                    return c.get("id")
+        return None
+
     # ------------------------------------------------------------------ clients
 
     def _make_client_settings_str(self, clients: list[dict]) -> str:
@@ -261,12 +284,11 @@ class XUIClient:
         """
         return json.dumps({"clients": clients})
 
-    async def _try_legacy_add_client(self, inbound_id: int, client: dict, retries: int = 2) -> bool:
+    async def _try_legacy_add_client(self, inbound_id: int, client: dict, retries: int = 1) -> bool:
         """
-        3x-ui нередко отдаёт пустой ответ на addClient при конкурентной записи
-        в конфиг (баг #3052/#3236) — _request уже ретраит пустой ответ внутри
-        одного вызова, но здесь добавлена ещё одна попытка с паузой поверх,
-        т.к. на практике одного цикла ретраев иногда не хватает под нагрузкой.
+        Ретраим ТОЛЬКО пустой ответ (известный баг 3x-ui #3052/#3236 при конкурентной
+        записи в конфиг) — если панель ответила содержательно (например "Duplicate email"),
+        это не транзиентная ошибка, повторные попытки её не исправят, поэтому сразу выходим.
         """
         payload = {
             "id": inbound_id,
@@ -277,12 +299,15 @@ class XUIClient:
             if resp and resp.get("success"):
                 logger.info(f"3x-ui legacy addClient succeeded (inbound={inbound_id})")
                 return True
-            logger.debug(f"3x-ui legacy addClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if resp is not None:
+                logger.error(f"3x-ui legacy addClient rejected (inbound={inbound_id}): {resp.get('msg')}")
+                return False
+            logger.debug(f"3x-ui legacy addClient empty response [{attempt}] (inbound={inbound_id})")
             if attempt < retries + 1:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
         return False
 
-    async def _try_legacy_update_client(self, inbound_id: int, client: dict, retries: int = 2) -> bool:
+    async def _try_legacy_update_client(self, inbound_id: int, client: dict, retries: int = 1) -> bool:
         payload = {
             "id": inbound_id,
             "settings": self._make_client_settings_str([client]),
@@ -292,12 +317,15 @@ class XUIClient:
             if resp and resp.get("success"):
                 logger.info(f"3x-ui legacy updateClient succeeded (inbound={inbound_id})")
                 return True
-            logger.debug(f"3x-ui legacy updateClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if resp is not None:
+                logger.error(f"3x-ui legacy updateClient rejected (inbound={inbound_id}): {resp.get('msg')}")
+                return False
+            logger.debug(f"3x-ui legacy updateClient empty response [{attempt}] (inbound={inbound_id})")
             if attempt < retries + 1:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
         return False
 
-    async def _try_legacy_delete_client(self, inbound_id: int, client_id: str, retries: int = 2) -> bool:
+    async def _try_legacy_delete_client(self, inbound_id: int, client_id: str, retries: int = 1) -> bool:
         for attempt in range(1, retries + 2):
             resp = await self._request(
                 "POST",
@@ -306,9 +334,12 @@ class XUIClient:
             if resp and resp.get("success"):
                 logger.info(f"3x-ui legacy delClient succeeded (inbound={inbound_id})")
                 return True
-            logger.debug(f"3x-ui legacy delClient failed [{attempt}] (inbound={inbound_id}): {resp}")
+            if resp is not None:
+                logger.error(f"3x-ui legacy delClient rejected (inbound={inbound_id}): {resp.get('msg')}")
+                return False
+            logger.debug(f"3x-ui legacy delClient empty response [{attempt}] (inbound={inbound_id})")
             if attempt < retries + 1:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
         return False
 
     async def add_client(
@@ -343,6 +374,18 @@ class XUIClient:
             "comment": "",
             "reset": 0,
         }
+
+        # Подчищаем "хвост" — клиента с тем же email, оставшегося в панели после
+        # ранее неудачной (частичной) попытки создания. Без этого повторная
+        # попытка гарантированно упадёт с "Duplicate email" на каждом ретрае.
+        existing_uuid = await self.find_client_by_email(email, inbound_ids)
+        if existing_uuid:
+            logger.warning(
+                f"3x-ui add_client: найден старый клиент с email={email} "
+                f"(uuid={existing_uuid}), удаляю перед созданием нового"
+            )
+            await self.delete_client(existing_uuid, inbound_ids=inbound_ids)
+
         payload = {
             "client": client,
             "inboundIds": inbound_ids,
