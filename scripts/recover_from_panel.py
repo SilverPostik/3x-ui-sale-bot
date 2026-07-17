@@ -23,11 +23,7 @@
 Скрипт идемпотентен: повторный запуск не создаёт дублей — если подписка
 с данным xui_client_id уже есть в БД, она пропускается.
 
-ИСПОЛЬЗОВАНИЕ:
-    # Сначала подними db и один раз бота, чтобы накатились alembic-миграции
-    # (создали пустые таблицы), либо вручную:
-    #   docker compose run --rm bot alembic upgrade head
-
+ИСПОЛЬЗОВАНИЕ (миграции применяются автоматически, отдельный шаг не нужен):
     # Просмотреть, что будет восстановлено, ничего не меняя в БД:
     docker compose run --rm bot python scripts/recover_from_panel.py
 
@@ -49,7 +45,6 @@ from database.engine import AsyncSessionLocal
 from database.models.user import User
 from database.models.subscription import Subscription
 from bot.services.xui_client import xui_client
-from config.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger("recover")
@@ -57,19 +52,57 @@ logger = logging.getLogger("recover")
 EMAIL_RE = re.compile(r"^tg(\d+)$")
 
 
+def ensure_schema() -> None:
+    """
+    Применяет alembic-миграции (upgrade head) синхронно, до старта async-кода.
+    Скрипт может запускаться до первого старта бота — не полагаемся на то,
+    что main.py уже успел это сделать. Без этого шага таблицы users/subscriptions
+    могут просто отсутствовать (именно так выглядела ошибка
+    "relation subscriptions does not exist"). Безопасно вызывать повторно:
+    если схема уже актуальна, alembic ничего не делает.
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    project_root = Path(__file__).resolve().parent.parent
+    logger.info("Применяю alembic-миграции (upgrade head)...")
+    cfg = Config(str(project_root / "migrations" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(project_root / "migrations"))
+    try:
+        command.upgrade(cfg, "head")
+        # См. main.py::run_migrations — fileConfig() из alembic.ini отключает
+        # (.disabled=True) все уже существующие логгеры, не только root.
+        for _name in list(logging.Logger.manager.loggerDict.keys()):
+            logging.getLogger(_name).disabled = False
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s", force=True)
+        logger.info("Миграции применены (или уже были актуальны) ✓")
+    except Exception as e:
+        logger.error(f"Не удалось применить миграции: {e}")
+        logger.error(
+            "Проверьте, что контейнер db поднят и доступен "
+            "(POSTGRES_HOST/POSTGRES_PORT/POSTGRES_PASSWORD в .env верны)."
+        )
+        raise
+
+
 async def collect_clients() -> dict[str, dict]:
     """
-    Обходит все inbound'ы из REALITY_INBOUND_ID и группирует клиентов по UUID.
+    Обходит ВСЕ inbound'ы в панели (не только перечисленные сейчас в
+    REALITY_INBOUND_ID — конфиг мог измениться с момента создания клиентов)
+    и группирует клиентов по UUID.
     Возвращает {uuid: {"email", "expiryTime", "subId", "enable", "limitIp", "inbound_ids": set}}
     """
     groups: dict[str, dict] = {}
 
-    for iid in settings.REALITY_INBOUND_ID:
-        inbound = await xui_client.get_inbound(iid)
-        if not inbound:
-            logger.warning(f"Inbound #{iid} не найден или недоступен, пропускаю")
-            continue
+    inbounds = await xui_client.get_inbounds()
+    if not inbounds:
+        logger.error("Панель вернула пустой список inbound'ов — проверь THREEXUI_URL/логин/пароль в .env")
+        return groups
 
+    logger.info(f"Найдено inbound'ов в панели: {len(inbounds)}")
+
+    for inbound in inbounds:
+        iid = inbound.get("id")
         raw = inbound.get("settings")
         if not raw:
             continue
@@ -80,7 +113,7 @@ async def collect_clients() -> dict[str, dict]:
             continue
 
         clients = parsed.get("clients") or []
-        logger.info(f"Inbound #{iid}: найдено {len(clients)} клиентов")
+        logger.info(f"Inbound #{iid} ({inbound.get('remark', '—')}): найдено {len(clients)} клиентов")
 
         for c in clients:
             uuid = c.get("id")
@@ -107,7 +140,6 @@ async def collect_clients() -> dict[str, dict]:
 
 async def main(apply: bool) -> None:
     logger.info(f"Режим: {'ЗАПИСЬ В БД' if apply else 'DRY-RUN (просмотр, без изменений)'}")
-    logger.info(f"Проверяемые inbound'ы: {settings.REALITY_INBOUND_ID}")
 
     groups = await collect_clients()
     logger.info(f"Всего уникальных клиентов (по UUID) в панели: {len(groups)}")
@@ -190,5 +222,6 @@ async def main(apply: bool) -> None:
 
 
 if __name__ == "__main__":
+    ensure_schema()
     apply_flag = "--apply" in sys.argv
     asyncio.run(main(apply_flag))

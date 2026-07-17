@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -20,7 +21,49 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def run_migrations() -> None:
+    """
+    Применяет alembic-миграции (upgrade head) при каждом старте бота.
+    Blocking-вызов уводим в отдельный поток через to_thread — у alembic
+    внутри свой asyncio.run(), который нельзя вызвать из уже работающего loop.
+    Безопасно на каждом старте: если схема уже актуальна, alembic ничего не делает.
+    """
+    def _upgrade() -> None:
+        from pathlib import Path
+        from alembic.config import Config
+        from alembic import command
+        project_root = Path(__file__).resolve().parent
+        cfg = Config(str(project_root / "migrations" / "alembic.ini"))
+        cfg.set_main_option("script_location", str(project_root / "migrations"))
+        command.upgrade(cfg, "head")
+        # alembic.ini подключает свой logging-конфиг через fileConfig(), у которого
+        # ПО УМОЛЧАНИЮ disable_existing_loggers=True — он не просто меняет уровень
+        # root-логгера, а помечает .disabled=True АБСОЛЮТНО ВСЕ уже созданные
+        # логгеры (включая логгеры всех модулей бота, раз они создаются на импорте
+        # module-level через logging.getLogger(__name__) до вызова main()).
+        # Без этого восстановления бот замолкал бы полностью после старта.
+        for _name in list(logging.Logger.manager.loggerDict.keys()):
+            logging.getLogger(_name).disabled = False
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            force=True,
+        )
+
+    logger.info("Применяю alembic-миграции (upgrade head)...")
+    try:
+        await asyncio.to_thread(_upgrade)
+        logger.info("Миграции применены ✓")
+    except Exception as e:
+        logger.error(f"Не удалось применить миграции: {e}")
+        logger.error("Проверьте доступность БД (POSTGRES_HOST/POSTGRES_PORT/POSTGRES_PASSWORD в .env)")
+        sys.exit(1)
+
+
 async def main() -> None:
+    await run_migrations()
+
     bot = Bot(
         token=settings.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
