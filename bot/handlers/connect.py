@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import SubscriptionRepository
+from bot.services.subscription_service import SubscriptionService
 from bot.keyboards import connect_kb
 from bot.utils.formatters import format_date, days_left, subscription_status
 from bot.utils.qr import generate_qr
@@ -21,6 +22,16 @@ async def cb_connect(callback: CallbackQuery, session: AsyncSession) -> None:
         user_id = callback.from_user.id
         sub_repo = SubscriptionRepository(session)
         sub = await sub_repo.get_active(user_id)
+
+        if not sub or not sub.subscription_url:
+            # Возможно, у пользователя нет записи в БД (например, после сбоя БД),
+            # но клиент реально есть в панели 3x-ui — восстанавливаем на лету.
+            # Используем восстановленное только если подписка реально активна —
+            # иначе ведём себя так же, как и для обычной истёкшей подписки.
+            restored = await SubscriptionService(session).sync_from_panel_if_missing(user_id)
+            if restored and restored.is_active and restored.subscription_url:
+                sub = restored
+                logger.info(f"connect: подписка user={user_id} восстановлена из панели on-the-fly")
 
         if not sub or not sub.subscription_url:
             await safe_edit_text(

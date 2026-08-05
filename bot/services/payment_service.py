@@ -48,13 +48,14 @@ class PaymentService:
     ) -> Optional[Subscription]:
         """
         Подтверждает оплату и создаёт/продлевает подписку.
-        Идемпотентен — возвращает None если уже обработан.
+        Идемпотентен — возвращает None если платёж уже был обработан ранее
+        (проверка по payment.status, а не по external_payment_id: для Platega
+        external_payment_id проставляется на pending-платёж СРАЗУ при создании
+        транзакции, ещё до реальной оплаты — поиск по нему нашёл бы саму же
+        текущую запись и ложно считал бы её "уже обработанным дубликатом",
+        из-за чего confirm_payment всегда возвращал None на кнопке
+        «Проверить оплату», даже при первом реальном подтверждении).
         """
-        existing = await self.payment_repo.get_by_external_id(external_payment_id)
-        if existing:
-            logger.warning(f"Duplicate payment external_id={external_payment_id}")
-            return None
-
         payment = await self.payment_repo.get_by_id(payment_id)
         if not payment or payment.status == "paid":
             return None

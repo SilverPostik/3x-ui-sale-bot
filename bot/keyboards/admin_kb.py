@@ -60,3 +60,25 @@ def admin_back_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="admin_menu")]
         ]
     )
+
+
+def admin_user_card_kb(user_id: int, has_sub: bool, is_active: bool) -> InlineKeyboardMarkup:
+    """Карточка пользователя в админке — управление подпиской."""
+    rows = [
+        [
+            InlineKeyboardButton(text="➕7 дней", callback_data=f"adm_sub_adj_{user_id}_7"),
+            InlineKeyboardButton(text="➕30 дней", callback_data=f"adm_sub_adj_{user_id}_30"),
+        ],
+    ]
+    if has_sub:
+        rows.append([
+            InlineKeyboardButton(text="➖7 дней", callback_data=f"adm_sub_adj_{user_id}_-7"),
+            InlineKeyboardButton(text="➖30 дней", callback_data=f"adm_sub_adj_{user_id}_-30"),
+        ])
+    rows.append([InlineKeyboardButton(text="✏️ На своё число дней", callback_data=f"adm_sub_custom_{user_id}")])
+    rows.append([InlineKeyboardButton(text="📅 Указать точную дату", callback_data=f"adm_sub_setdate_{user_id}")])
+    if has_sub:
+        toggle_text = "🔴 Отключить" if is_active else "🟢 Включить"
+        rows.append([InlineKeyboardButton(text=toggle_text, callback_data=f"adm_sub_toggle_{user_id}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_users_search")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -3,6 +3,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import SubscriptionRepository, PaymentRepository, UserRepository
+from bot.services.subscription_service import SubscriptionService
 from bot.keyboards import profile_kb, back_to_menu_kb
 from bot.utils.formatters import format_date, days_left, subscription_status
 from config.texts import PROFILE_TEMPLATE, PLAN_NAMES, NO_SUBSCRIPTION
@@ -18,6 +19,16 @@ async def cb_profile(callback: CallbackQuery, session: AsyncSession) -> None:
 
     user = await user_repo.get_by_id(user_id)
     sub = await sub_repo.get_active(user_id)
+
+    if not sub:
+        # Возможно, у пользователя нет записи в БД (например, после сбоя БД),
+        # но клиент реально есть в панели 3x-ui — восстанавливаем на лету.
+        # Используем восстановленное только если подписка реально активна —
+        # иначе ведём себя так же, как и для обычной истёкшей подписки.
+        restored = await SubscriptionService(session).sync_from_panel_if_missing(user_id)
+        if restored and restored.is_active:
+            sub = restored
+
     registered_at = format_date(user.created_at) if user and user.created_at else "—"
 
     if sub:

@@ -1,7 +1,8 @@
 import logging
+from datetime import datetime, timezone
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +11,10 @@ from bot.repositories import (
     UserRepository, SubscriptionRepository,
     PaymentRepository, PromocodeRepository, SettingsRepository,
 )
+from bot.services.subscription_service import SubscriptionService
 from bot.keyboards.admin_kb import (
     admin_menu_kb, admin_users_kb, admin_promos_kb,
-    admin_broadcast_kb, admin_settings_kb, admin_back_kb,
+    admin_broadcast_kb, admin_settings_kb, admin_back_kb, admin_user_card_kb,
 )
 from config.settings import settings
 from config.texts import ADMIN_PANEL, ADMIN_NO_ACCESS
@@ -34,6 +36,8 @@ class AdminStates(StatesGroup):
     set_price_months = State()
     set_price_value = State()
     search_user = State()
+    adjust_days_custom = State()
+    set_exact_date = State()
 
 
 # --- /admin command ---
@@ -106,6 +110,40 @@ async def cb_admin_users_search(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer()
 
 
+async def _render_user_card(session: AsyncSession, uid: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Собирает текст + клавиатуру карточки пользователя (переиспользуется везде)."""
+    from bot.utils.formatters import format_date, days_left
+
+    user_repo = UserRepository(session)
+    sub_repo = SubscriptionRepository(session)
+    user = await user_repo.get_by_id(uid)
+    sub = await sub_repo.get_last(uid)
+
+    if not user:
+        return "❌ Пользователь не найден.", admin_back_kb()
+
+    text = (
+        f"👤 <b>Пользователь</b>\n\n"
+        f"ID: <code>{user.id}</code>\n"
+        f"Username: @{user.username or '—'}\n"
+        f"Имя: {user.full_name or '—'}\n"
+    )
+    if sub:
+        now = datetime.now(timezone.utc)
+        expires = sub.expires_at if sub.expires_at.tzinfo else sub.expires_at.replace(tzinfo=timezone.utc)
+        really_active = sub.is_active and expires > now
+        text += (
+            f"Подписка: {'✅ Активна' if really_active else ('🔴 Отключена' if not sub.is_active else '❌ Истекла')}\n"
+            f"Истекает: {format_date(sub.expires_at)} ({days_left(sub.expires_at)} дн.)\n"
+            f"Inbound'ы: {sub.xui_inbound_id or '—'}\n"
+        )
+    else:
+        text += "Подписка: ❌ Нет\n"
+
+    kb = admin_user_card_kb(uid, has_sub=sub is not None, is_active=bool(sub and sub.is_active))
+    return text, kb
+
+
 @router.message(AdminStates.search_user)
 async def handle_search_user(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not is_admin(message.from_user.id):
@@ -116,24 +154,177 @@ async def handle_search_user(message: Message, state: FSMContext, session: Async
     except ValueError:
         await message.answer("❌ Неверный ID.", reply_markup=admin_back_kb())
         return
-    repo = UserRepository(session)
-    user = await repo.get_by_id(uid)
-    sub_repo = SubscriptionRepository(session)
-    sub = await sub_repo.get_active(uid)
-    if not user:
-        await message.answer("❌ Пользователь не найден.", reply_markup=admin_back_kb(), parse_mode="HTML")
+    text, kb = await _render_user_card(session, uid)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+# --- Управление подпиской конкретного пользователя ---
+
+@router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_adj_"))
+async def cb_admin_sub_adjust(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
         return
-    text = (
-        f"👤 <b>Пользователь</b>\n\n"
-        f"ID: <code>{user.id}</code>\n"
-        f"Username: @{user.username or '—'}\n"
-        f"Имя: {user.full_name or '—'}\n"
-        f"Подписка: {'✅ Активна' if sub else '❌ Нет'}\n"
+    try:
+        _, _, _, uid_str, delta_str = callback.data.split("_", 4)
+        uid = int(uid_str)
+        delta = int(delta_str)
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    await callback.answer("⏳ Применяю (может занять до ~10 сек)...")
+    sub_service = SubscriptionService(session)
+    result = await sub_service.admin_adjust_expiry(uid, delta)
+
+    if result is None:
+        await callback.message.edit_text(
+            f"⚠️ Не удалось изменить подписку user_id=<code>{uid}</code> — "
+            f"3x-ui не ответил после нескольких попыток. Попробуйте ещё раз чуть позже.",
+            reply_markup=admin_back_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    text, kb = await _render_user_card(session, uid)
+    await callback.message.edit_text(f"✅ Изменено на {delta:+d} дн.\n\n{text}", reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_toggle_"))
+async def cb_admin_sub_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    try:
+        uid = int(callback.data.removeprefix("adm_sub_toggle_"))
+    except ValueError:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    sub_repo = SubscriptionRepository(session)
+    sub = await sub_repo.get_last(uid)
+    if not sub:
+        await callback.answer("Подписка не найдена.", show_alert=True)
+        return
+
+    new_state = not sub.is_active
+    await callback.answer("⏳ Применяю...")
+    sub_service = SubscriptionService(session)
+    result = await sub_service.admin_set_active(uid, enable=new_state)
+
+    if result is None:
+        await callback.message.edit_text(
+            f"⚠️ Не удалось переключить статус user_id=<code>{uid}</code> — "
+            f"3x-ui не ответил после нескольких попыток.",
+            reply_markup=admin_back_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    text, kb = await _render_user_card(session, uid)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_custom_"))
+async def cb_admin_sub_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    try:
+        uid = int(callback.data.removeprefix("adm_sub_custom_"))
+    except ValueError:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+    await state.update_data(target_user_id=uid)
+    await callback.message.edit_text(
+        f"✏️ Введите на сколько дней изменить подписку user_id=<code>{uid}</code>.\n"
+        f"Можно с минусом, например: <code>-10</code> или <code>15</code>",
+        reply_markup=admin_back_kb(),
+        parse_mode="HTML",
     )
-    if sub:
-        from bot.utils.formatters import format_date, days_left
-        text += f"Истекает: {format_date(sub.expires_at)} ({days_left(sub.expires_at)} дн.)"
-    await message.answer(text, reply_markup=admin_back_kb(), parse_mode="HTML")
+    await state.set_state(AdminStates.adjust_days_custom)
+    await callback.answer()
+
+
+@router.message(AdminStates.adjust_days_custom)
+async def handle_sub_custom_days(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    await state.clear()
+    uid = data.get("target_user_id")
+    if uid is None:
+        await message.answer("❌ Сессия истекла, начните заново.", reply_markup=admin_back_kb())
+        return
+    try:
+        delta = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Введите целое число (можно с минусом).", reply_markup=admin_back_kb())
+        return
+
+    sub_service = SubscriptionService(session)
+    result = await sub_service.admin_adjust_expiry(uid, delta)
+
+    if result is None:
+        await message.answer(
+            f"⚠️ Не удалось изменить подписку — 3x-ui не ответил после нескольких попыток. "
+            f"Попробуйте ещё раз чуть позже.",
+            reply_markup=admin_back_kb(),
+        )
+        return
+
+    text, kb = await _render_user_card(session, uid)
+    await message.answer(f"✅ Изменено на {delta:+d} дн.\n\n{text}", reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_setdate_"))
+async def cb_admin_sub_setdate(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    try:
+        uid = int(callback.data.removeprefix("adm_sub_setdate_"))
+    except ValueError:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+    await state.update_data(target_user_id=uid)
+    await callback.message.edit_text(
+        f"📅 Введите точную дату окончания подписки user_id=<code>{uid}</code>\n"
+        f"в формате <code>ДД.ММ.ГГГГ</code>, например: <code>31.12.2026</code>",
+        reply_markup=admin_back_kb(),
+        parse_mode="HTML",
+    )
+    await state.set_state(AdminStates.set_exact_date)
+    await callback.answer()
+
+
+@router.message(AdminStates.set_exact_date)
+async def handle_sub_set_date(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    await state.clear()
+    uid = data.get("target_user_id")
+    if uid is None:
+        await message.answer("❌ Сессия истекла, начните заново.", reply_markup=admin_back_kb())
+        return
+    try:
+        new_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").replace(
+            hour=23, minute=59, second=59, tzinfo=timezone.utc
+        )
+    except ValueError:
+        await message.answer("❌ Неверный формат. Пример: <code>31.12.2026</code>", reply_markup=admin_back_kb(), parse_mode="HTML")
+        return
+
+    sub_service = SubscriptionService(session)
+    result = await sub_service.admin_set_expiry_date(uid, new_date)
+
+    if result is None:
+        await message.answer(
+            "⚠️ Не удалось изменить подписку — либо у пользователя её ещё нет, "
+            "либо 3x-ui не ответил после нескольких попыток.",
+            reply_markup=admin_back_kb(),
+        )
+        return
+
+    text, kb = await _render_user_card(session, uid)
+    await message.answer(f"✅ Дата окончания установлена.\n\n{text}", reply_markup=kb, parse_mode="HTML")
 
 
 # --- Subscriptions ---

@@ -275,6 +275,61 @@ class XUIClient:
                     return c.get("id")
         return None
 
+    async def find_client_details_by_email(
+        self,
+        email: str,
+        inbound_ids: Optional[list[int]] = None,
+    ) -> Optional[dict]:
+        """
+        Ищет клиента с данным email и возвращает ПОЛНЫЕ данные (не только UUID) —
+        expiryTime, subId, enable, limitIp и список inbound'ов, где он найден
+        (клиент может быть в нескольких сразу, при мульти-inbound). Используется
+        для самовосстановления записи в БД, если клиент реально есть в панели
+        3x-ui, но по какой-то причине отсутствует в нашей базе (например, после
+        потери БД, если для него не был запущен ручной recover_from_panel.py).
+
+        Если inbound_ids не задан — сканирует ВСЕ inbound'ы панели (не только
+        перечисленные в REALITY_INBOUND_ID — конфиг мог измениться с момента
+        создания клиента).
+        """
+        target_inbounds = inbound_ids if inbound_ids is not None else [
+            i.get("id") for i in await self.get_inbounds() if i.get("id") is not None
+        ]
+
+        found_inbound_ids: set[int] = set()
+        details: Optional[dict] = None
+
+        for iid in target_inbounds:
+            inbound = await self.get_inbound(iid)
+            if not inbound:
+                continue
+            raw = inbound.get("settings")
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                continue
+            for c in (parsed.get("clients") or []):
+                if c.get("email") != email:
+                    continue
+                found_inbound_ids.add(iid)
+                if details is None or c.get("expiryTime", 0) > details.get("expiryTime", 0):
+                    details = {
+                        "id": c.get("id"),
+                        "email": c.get("email"),
+                        "expiryTime": c.get("expiryTime", 0),
+                        "subId": c.get("subId", ""),
+                        "enable": c.get("enable", True),
+                        "limitIp": c.get("limitIp", 1),
+                    }
+
+        if details is None:
+            return None
+
+        details["inbound_ids"] = sorted(found_inbound_ids)
+        return details
+
     # ------------------------------------------------------------------ clients
 
     def _make_client_settings_str(self, clients: list[dict]) -> str:
