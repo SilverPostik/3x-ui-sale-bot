@@ -1,6 +1,6 @@
-from typing import List, Annotated
-from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
-from pydantic import field_validator
+from typing import List
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     THREEXUI_SUB_PORT: int = 2096  # порт для ссылок подписки (не путать с портом панели)
     # Один или несколько inbound ID через запятую: "1" или "1,2,3".
     # Клиент будет создан сразу во всех указанных inbound'ах (один UUID/подписка на все).
-    REALITY_INBOUND_ID: Annotated[List[int], NoDecode] = [1]
+    # Хранится как raw-строка (REALITY_INBOUND_ID_RAW) и парсится в список ниже через
+    # @property — так это работает на любой версии pydantic-settings, без NoDecode
+    # (который появился только в 2.7.0, а у нас запинена 2.5.2).
+    REALITY_INBOUND_ID_RAW: str = Field(default="1", validation_alias="REALITY_INBOUND_ID")
     DEFAULT_LIMIT_IP: int = 1  # max devices per subscription
 
     # Ограничение количества пользователей с активной платной подпиской.
@@ -48,8 +51,8 @@ class Settings(BaseSettings):
     PLATEGA_METHOD_CRYPTO: int = 13
     WEBHOOK_HOST: str = ""              # https://yourdomain.com (для Platega callback)
 
-    # Admin
-    ADMIN_IDS: Annotated[List[int], NoDecode] = []
+    # Admin (см. комментарий у REALITY_INBOUND_ID_RAW — та же логика без NoDecode)
+    ADMIN_IDS_RAW: str = Field(default="", validation_alias="ADMIN_IDS")
 
     # Support
     SUPPORT_USERNAME: str = "support"
@@ -60,22 +63,14 @@ class Settings(BaseSettings):
     NOTIFY_1_DAY: bool = True
     DISABLE_EXPIRED_USERS: bool = True
 
-    @field_validator("ADMIN_IDS", mode="before")
-    @classmethod
-    def parse_admin_ids(cls, v):
-        if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
-        return v
+    @property
+    def REALITY_INBOUND_ID(self) -> List[int]:
+        ids = [int(x.strip()) for x in self.REALITY_INBOUND_ID_RAW.split(",") if x.strip()]
+        return ids or [1]
 
-    @field_validator("REALITY_INBOUND_ID", mode="before")
-    @classmethod
-    def parse_reality_inbound_id(cls, v):
-        if isinstance(v, str):
-            ids = [int(x.strip()) for x in v.split(",") if x.strip()]
-            if not ids:
-                raise ValueError("REALITY_INBOUND_ID: список не может быть пустым")
-            return ids
-        return v
+    @property
+    def ADMIN_IDS(self) -> List[int]:
+        return [int(x.strip()) for x in self.ADMIN_IDS_RAW.split(",") if x.strip()]
 
     @property
     def database_url(self) -> str:
