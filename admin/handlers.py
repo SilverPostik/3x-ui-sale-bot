@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import (
@@ -20,6 +21,15 @@ from config.settings import settings
 from config.texts import ADMIN_PANEL, ADMIN_NO_ACCESS
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """edit_text, игнорируя 'message is not modified'."""
+    try:
+        await callback.message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
 router = Router()
 
 
@@ -55,7 +65,7 @@ async def cb_admin_menu(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer(ADMIN_NO_ACCESS, show_alert=True)
         return
-    await callback.message.edit_text(ADMIN_PANEL, reply_markup=admin_menu_kb(), parse_mode="HTML")
+    await _safe_edit(callback, ADMIN_PANEL, reply_markup=admin_menu_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -65,7 +75,7 @@ async def cb_admin_menu(callback: CallbackQuery) -> None:
 async def cb_admin_users(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text("👥 <b>Пользователи</b>", reply_markup=admin_users_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "👥 <b>Пользователи</b>", reply_markup=admin_users_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -80,7 +90,7 @@ async def cb_admin_users_list(callback: CallbackQuery, session: AsyncSession) ->
         lines.append(f"• <code>{u.id}</code> @{u.username or '—'} {u.full_name or ''}")
     if len(users) > 20:
         lines.append(f"\n... и ещё {len(users) - 20}")
-    await callback.message.edit_text("\n".join(lines), reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "\n".join(lines), reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -97,7 +107,7 @@ async def cb_admin_users_stats(callback: CallbackQuery, session: AsyncSession) -
         f"👥 Всего пользователей: <b>{total}</b>\n"
         f"✅ Активных подписок: <b>{active}</b>"
     )
-    await callback.message.edit_text(text, reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, text, reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -105,7 +115,7 @@ async def cb_admin_users_stats(callback: CallbackQuery, session: AsyncSession) -
 async def cb_admin_users_search(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text("🔍 Введите Telegram ID пользователя:", reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "🔍 Введите Telegram ID пользователя:", reply_markup=admin_back_kb(), parse_mode="HTML")
     await state.set_state(AdminStates.search_user)
     await callback.answer()
 
@@ -177,7 +187,7 @@ async def cb_admin_sub_adjust(callback: CallbackQuery, session: AsyncSession) ->
     result = await sub_service.admin_adjust_expiry(uid, delta)
 
     if result is None:
-        await callback.message.edit_text(
+        await _safe_edit(callback, 
             f"⚠️ Не удалось изменить подписку user_id=<code>{uid}</code> — "
             f"3x-ui не ответил после нескольких попыток. Попробуйте ещё раз чуть позже.",
             reply_markup=admin_back_kb(),
@@ -186,7 +196,7 @@ async def cb_admin_sub_adjust(callback: CallbackQuery, session: AsyncSession) ->
         return
 
     text, kb = await _render_user_card(session, uid)
-    await callback.message.edit_text(f"✅ Изменено на {delta:+d} дн.\n\n{text}", reply_markup=kb, parse_mode="HTML")
+    await _safe_edit(callback, f"✅ Изменено на {delta:+d} дн.\n\n{text}", reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_toggle_"))
@@ -211,7 +221,7 @@ async def cb_admin_sub_toggle(callback: CallbackQuery, session: AsyncSession) ->
     result = await sub_service.admin_set_active(uid, enable=new_state)
 
     if result is None:
-        await callback.message.edit_text(
+        await _safe_edit(callback, 
             f"⚠️ Не удалось переключить статус user_id=<code>{uid}</code> — "
             f"3x-ui не ответил после нескольких попыток.",
             reply_markup=admin_back_kb(),
@@ -220,7 +230,7 @@ async def cb_admin_sub_toggle(callback: CallbackQuery, session: AsyncSession) ->
         return
 
     text, kb = await _render_user_card(session, uid)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await _safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("adm_sub_custom_"))
@@ -233,7 +243,7 @@ async def cb_admin_sub_custom(callback: CallbackQuery, state: FSMContext) -> Non
         await callback.answer("Ошибка данных.", show_alert=True)
         return
     await state.update_data(target_user_id=uid)
-    await callback.message.edit_text(
+    await _safe_edit(callback, 
         f"✏️ Введите на сколько дней изменить подписку user_id=<code>{uid}</code>.\n"
         f"Можно с минусом, например: <code>-10</code> или <code>15</code>",
         reply_markup=admin_back_kb(),
@@ -284,7 +294,7 @@ async def cb_admin_sub_setdate(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer("Ошибка данных.", show_alert=True)
         return
     await state.update_data(target_user_id=uid)
-    await callback.message.edit_text(
+    await _safe_edit(callback, 
         f"📅 Введите точную дату окончания подписки user_id=<code>{uid}</code>\n"
         f"в формате <code>ДД.ММ.ГГГГ</code>, например: <code>31.12.2026</code>",
         reply_markup=admin_back_kb(),
@@ -341,7 +351,7 @@ async def cb_admin_subs(callback: CallbackQuery, session: AsyncSession) -> None:
         f"✅ Активных: <b>{active}</b>\n"
         f"❌ Истекших (не деактивированных): <b>{len(expired)}</b>"
     )
-    await callback.message.edit_text(text, reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, text, reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -351,7 +361,7 @@ async def cb_admin_subs(callback: CallbackQuery, session: AsyncSession) -> None:
 async def cb_admin_promos(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text("🎁 <b>Промокоды</b>", reply_markup=admin_promos_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "🎁 <b>Промокоды</b>", reply_markup=admin_promos_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -362,7 +372,7 @@ async def cb_admin_promo_list(callback: CallbackQuery, session: AsyncSession) ->
     repo = PromocodeRepository(session)
     promos = await repo.get_all()
     if not promos:
-        await callback.message.edit_text("🎁 Промокодов нет.", reply_markup=admin_back_kb(), parse_mode="HTML")
+        await _safe_edit(callback, "🎁 Промокодов нет.", reply_markup=admin_back_kb(), parse_mode="HTML")
         await callback.answer()
         return
     lines = [f"🎁 <b>Промокоды ({len(promos)})</b>\n"]
@@ -372,7 +382,7 @@ async def cb_admin_promo_list(callback: CallbackQuery, session: AsyncSession) ->
             f"{status} <code>{p.code}</code> — {p.type}: {p.value} "
             f"({p.activations_count}/{p.max_activations or '∞'} акт.)"
         )
-    await callback.message.edit_text("\n".join(lines), reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "\n".join(lines), reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -380,7 +390,7 @@ async def cb_admin_promo_list(callback: CallbackQuery, session: AsyncSession) ->
 async def cb_admin_promo_create(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text(
+    await _safe_edit(callback, 
         "🎁 Введите промокод в формате:\n"
         "<code>КОД ТИП ЗНАЧЕНИЕ [МАКС_АКТИВАЦИЙ] [ОДНОРАЗОВЫЙ]</code>\n\n"
         "Тип: <b>days</b> или <b>discount</b>\n"
@@ -422,7 +432,7 @@ async def handle_create_promo(message: Message, state: FSMContext, session: Asyn
 async def cb_admin_broadcast(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text("📢 <b>Рассылка</b>", reply_markup=admin_broadcast_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "📢 <b>Рассылка</b>", reply_markup=admin_broadcast_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -431,7 +441,7 @@ async def cb_admin_broadcast_target(callback: CallbackQuery, state: FSMContext) 
     if not is_admin(callback.from_user.id):
         return
     await state.update_data(broadcast_target=callback.data)
-    await callback.message.edit_text("✏️ Введите текст рассылки:", reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "✏️ Введите текст рассылки:", reply_markup=admin_back_kb(), parse_mode="HTML")
     await state.set_state(AdminStates.broadcast_message)
     await callback.answer()
 
@@ -493,7 +503,7 @@ async def cb_admin_finance(callback: CallbackQuery, session: AsyncSession) -> No
         f"  Месяц:   {month_r} ₽\n"
         f"  Всего:   {total_r} ₽"
     )
-    await callback.message.edit_text(text, reply_markup=admin_back_kb(), parse_mode="HTML")
+    await _safe_edit(callback, text, reply_markup=admin_back_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -503,7 +513,7 @@ async def cb_admin_finance(callback: CallbackQuery, session: AsyncSession) -> No
 async def cb_admin_settings(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.edit_text("⚙️ <b>Настройки</b>", reply_markup=admin_settings_kb(), parse_mode="HTML")
+    await _safe_edit(callback, "⚙️ <b>Настройки</b>", reply_markup=admin_settings_kb(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -520,7 +530,7 @@ async def cb_admin_set_prices(callback: CallbackQuery, state: FSMContext, sessio
     p3r = await repo.get_plan_price_rub(3)
     p6r = await repo.get_plan_price_rub(6)
     p12r = await repo.get_plan_price_rub(12)
-    await callback.message.edit_text(
+    await _safe_edit(callback, 
         f"💰 <b>Текущие цены</b>\n\n"
         f"Stars ⭐: 1м={p1s} 3м={p3s} 6м={p6s} 12м={p12s}\n"
         f"Рубли ₽: 1м={p1r} 3м={p3r} 6м={p6r} 12м={p12r}\n\n"
