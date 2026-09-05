@@ -40,6 +40,7 @@ class XUIClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._logged_in: bool = False
         self._csrf_token: str | None = None
+        self._session_cookie: str | None = None
 
     def _url(self, path: str) -> str:
         return f"{self._base}/{path.lstrip('/')}"
@@ -64,6 +65,7 @@ class XUIClient:
                 timeout=aiohttp.ClientTimeout(total=30),
             )
             self._logged_in = False
+            self._session_cookie = None
         return self._session
 
     async def login(self) -> bool:
@@ -140,6 +142,12 @@ class XUIClient:
 
                 if data.get("success"):
                     self._logged_in = True
+                    # Явно сохраняем session cookie — CookieJar с unsafe=True
+                    # иногда теряет cookies при запросах на IP-адреса
+                    for cookie in self._session.cookie_jar:
+                        if cookie.key in ("session", "3x-ui"):
+                            self._session_cookie = cookie.value
+                            break
                     logger.info("3x-ui login OK")
                     return True
 
@@ -163,8 +171,11 @@ class XUIClient:
         headers = {"Accept": "application/json"}
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
-        elif self._csrf_token:
-            headers["X-CSRF-Token"] = self._csrf_token
+        else:
+            if self._csrf_token:
+                headers["X-CSRF-Token"] = self._csrf_token
+            if self._session_cookie:
+                headers["Cookie"] = f"session={self._session_cookie}"
         return headers
 
     async def _request(
@@ -217,6 +228,7 @@ class XUIClient:
                         if _retry_auth:
                             logger.info("3x-ui 401, re-login...")
                             self._logged_in = False
+                            self._session_cookie = None
                             if await self.login():
                                 return await self._request(
                                     method, path, json_body, _retry_auth=False
