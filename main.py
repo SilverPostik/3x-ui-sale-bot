@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config.settings import settings
 from bot.handlers import get_main_router
-from bot.middlewares import DbSessionMiddleware, UserMiddleware
+from bot.middlewares import DbSessionMiddleware, UserMiddleware, XUIConnectionMiddleware
 from admin import admin_router
 from scheduler import setup_scheduler
 from bot.services.xui_client import xui_client
@@ -70,6 +70,7 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
+    dp.update.outer_middleware(XUIConnectionMiddleware())
     dp.update.outer_middleware(DbSessionMiddleware())
     dp.update.outer_middleware(UserMiddleware())
 

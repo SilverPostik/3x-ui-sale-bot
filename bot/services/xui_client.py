@@ -165,6 +165,19 @@ class XUIClient:
             return await self.login()
         return True
 
+    async def ensure_connected(self) -> bool:
+        """
+        Проверяет соединение с панелью и восстанавливает при необходимости.
+        Вызывается из middleware перед каждым действием пользователя.
+        Не делает лишних запросов если уже залогинены.
+        """
+        if not self._logged_in:
+            logger.info("3x-ui ensure_connected: не залогинен, выполняю login")
+            return await self.login()
+        # Раз в N запросов можно делать ping, но это дорого.
+        # Просто доверяем _logged_in флагу — при 401 он сбросится автоматически.
+        return True
+
     # ------------------------------------------------------------------ raw request
 
     def _auth_headers(self) -> dict[str, str]:
@@ -254,8 +267,19 @@ class XUIClient:
 
     async def get_inbounds(self) -> list[dict]:
         resp = await self._request("GET", "/panel/api/inbounds/list")
+        if resp is None:
+            # Пустой ответ — сессия протухла, принудительно перелогиниваемся
+            logger.warning("3x-ui get_inbounds: пустой ответ, сброс сессии и повтор")
+            self._logged_in = False
+            self._session_cookie = None
+            if await self.login():
+                resp = await self._request("GET", "/panel/api/inbounds/list", _retry_auth=False)
         if resp and resp.get("success"):
-            return resp.get("obj") or []
+            obj = resp.get("obj") or []
+            if not obj:
+                logger.warning(f"3x-ui get_inbounds: success=true но obj пустой. Полный ответ: {resp}")
+            return obj
+        logger.error(f"3x-ui get_inbounds failed: {resp}")
         return []
 
     async def get_inbound(self, inbound_id: int) -> Optional[dict]:
