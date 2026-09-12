@@ -43,6 +43,15 @@ class PaymentRepository:
     async def get_by_charge_id(self, charge_id: str) -> Optional[Payment]:
         return await self.get_by_external_id(charge_id)
 
+    async def get_by_status(self, status: str) -> list[Payment]:
+        """
+        Платежи в заданном статусе. Используется retry_pending_xui_payments
+        для поиска платежей, подтверждённых провайдером, но ещё не
+        применённых в 3x-ui (status="confirmed_pending_xui").
+        """
+        result = await self.session.execute(select(Payment).where(Payment.status == status))
+        return list(result.scalars().all())
+
     async def update(self, payment: Payment) -> Payment:
         self.session.add(payment)
         await self.session.commit()

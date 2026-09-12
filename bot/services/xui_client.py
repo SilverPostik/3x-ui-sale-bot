@@ -41,6 +41,12 @@ class XUIClient:
         self._logged_in: bool = False
         self._csrf_token: str | None = None
         self._session_cookie: str | None = None
+        # Синглтон xui_client используется параллельно из разных апдейтов
+        # aiogram (и из scheduler). Без лока два коллера могут одновременно
+        # начать login() и затереть друг другу _csrf_token/_session_cookie —
+        # тогда в куках оказывается CSRF от одной попытки, а cookie от другой,
+        # и панель отвечает пустым/некорректным ответом на все следующие запросы.
+        self._login_lock = asyncio.Lock()
 
     def _url(self, path: str) -> str:
         return f"{self._base}/{path.lstrip('/')}"
@@ -73,6 +79,10 @@ class XUIClient:
         Авторизация для новых версий 3x-ui.
         Сначала пытается использовать Bearer API токен.
         Если токен не задан, выполняет cookie-based login.
+
+        Обёрнуто в лок: конкурентные вызовы (несколько апдейтов бота сразу)
+        не должны одновременно ходить на /login и затирать друг другу
+        csrf_token/session_cookie.
         """
         if self._api_token:
             logger.info("3x-ui API token auth enabled")
@@ -82,6 +92,14 @@ class XUIClient:
             logger.error("3x-ui username/password are not configured")
             return False
 
+        async with self._login_lock:
+            # Пока мы ждали лок, другой коллер уже мог успешно залогиниться —
+            # тогда повторный /login не нужен.
+            if self._logged_in:
+                return True
+            return await self._do_login()
+
+    async def _do_login(self) -> bool:
         session = await self._get_session()
 
         try:
@@ -232,7 +250,7 @@ class XUIClient:
                         if attempt < _RETRY_COUNT:
                             await asyncio.sleep(_RETRY_DELAY)
                             continue
-                        return None
+                        break  # исчерпали попытки — форс-релогин ниже, после цикла
 
                     if resp.status == 401:
                         if self._api_token:
@@ -255,11 +273,27 @@ class XUIClient:
 
             except json.JSONDecodeError as e:
                 logger.error(f"3x-ui JSON decode error: {e} | text={text[:200]}")
-                return None
+                break  # тоже уходим на форс-релогин, а не сдаёмся сразу
             except Exception as e:
                 logger.error(f"3x-ui request error [{attempt}] {method} {path}: {e}")
                 if attempt < _RETRY_COUNT:
                     await asyncio.sleep(_RETRY_DELAY)
+
+        # Все попытки исчерпаны (пустой ответ или битый JSON) — раньше эта
+        # ветка сразу отдавала None, и переподключение делал только
+        # get_inbounds() у себя отдельно. Остальные методы (update_client,
+        # legacy updateClient, add_client...) вызывают _request() напрямую и
+        # такой страховки не имели — именно это уронило продление подписки
+        # 12.09, хотя сессия к тому моменту формально была "залогинена".
+        # Форсируем релогин и пробуем ещё раз — один раз, для любого пути.
+        if _retry_auth and not self._api_token:
+            logger.warning(
+                f"3x-ui {method} {path}: {_RETRY_COUNT} попыток неудачны, форсирую релогин"
+            )
+            self._logged_in = False
+            self._session_cookie = None
+            if await self.login():
+                return await self._request(method, path, json_body, _retry_auth=False)
 
         return None
 
@@ -634,9 +668,18 @@ class XUIClient:
     # ------------------------------------------------------------------ diagnostics
 
     async def ping(self) -> bool:
-        """Быстрая проверка соединения и авторизации."""
-        inbounds = await self.get_inbounds()
-        return isinstance(inbounds, list)
+        """
+        Честная проверка соединения и авторизации.
+        Раньше опирался на get_inbounds(), который на любой ошибке (401,
+        пустой ответ, разлогин) молча возвращает [] — из-за этого ping()
+        всегда отвечал True, даже когда панель реально не отвечала
+        (isinstance([], list) тоже True). Здесь же смотрим на сырой ответ:
+        True только если панель прислала JSON с success=true.
+        """
+        if not await self._ensure_login():
+            return False
+        resp = await self._request("GET", "/panel/api/inbounds/list")
+        return bool(resp and resp.get("success"))
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
