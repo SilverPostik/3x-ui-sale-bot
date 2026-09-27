@@ -24,6 +24,9 @@ Production-ready Telegram бот для продажи VPN-подписок че
 ### 1. Клонирование
 
 ```bash
+sudo apt update
+sudo apt install git -y
+sudo apt update && sudo apt install nano -y
 git clone https://github.com/SilverPostik/3x-ui-sale-bot.git
 cd 3x-ui-sale-bot
 cp .env.example .env
