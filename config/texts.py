@@ -6,9 +6,9 @@ WELCOME = (
     "👋 <b>Добро пожаловать в VPN-сервис!</b>\n\n"
     "🔐 Быстрый, безопасный и надёжный VPN на базе VLESS Reality.\n"
     "📱 Поддерживаем Android, iOS, Windows и macOS через приложение <b>HAPP</b>.\n\n"
-    "Политика конфиденциальности и пользовательское соглашение:"
-    "https://telegra.ph/Politika-konfidencialnosti-06-21-31"
-    "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"
+    "Политика конфиденциальности и пользовательское соглашение:\n"
+    "https://telegra.ph/Politika-konfidencialnosti-06-21-31\n"
+    "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19\n"
     "Выберите действие:"
 )
 
