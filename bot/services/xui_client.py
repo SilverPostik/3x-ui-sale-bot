@@ -6,9 +6,11 @@
 - Сессия хранится в cookie с именем "session"
 - Новая API-форма клиента: /panel/api/clients/add и /panel/api/clients/update
     {"client": {...}, "inboundIds": [<id>]}
-- Legacy-форма клиента: /panel/api/inbounds/addClient и /panel/api/inbounds/updateClient
+- Legacy-форма клиента: /panel/api/inbounds/updateClient и .../delClient/...
     {"id": <int>, "settings": "<JSON-строка>"}
   where settings = json.dumps({"clients": [...]})
+  (legacy addClient не используется: панель стабильно отвечает на него пустым
+   телом, а ретраи с релогином только растягивают вызов на минуты)
 - subId НЕ генерируется сервером при API-создании (issue #3237), нужно передавать явно
 - flow для VLESS Reality: "xtls-rprx-vision"
 - API может вернуть пустой ответ (баг #3052, #3236) — нужны retries
@@ -29,6 +31,16 @@ logger = logging.getLogger(__name__)
 
 _RETRY_COUNT = 3
 _RETRY_DELAY = 1.0  # seconds
+
+
+class XUIPermanentError(RuntimeError):
+    """
+    Панель ответила содержательным отказом (success=false + msg).
+
+    Такой ответ не изменится от повтора: ретраи только тянут время
+    (в проде один такой вызов addClient занимал 137 секунд). Вызывающий код
+    по этому исключению обязан прекратить попытки.
+    """
 
 
 class XUIClient:
@@ -322,29 +334,6 @@ class XUIClient:
             return resp.get("obj")
         return None
 
-    async def find_client_by_email(self, email: str, inbound_ids: list[int]) -> Optional[str]:
-        """
-        Ищет клиента с данным email среди указанных inbound'ов и возвращает его UUID,
-        если найден. Нужно, чтобы автоматически подчищать "хвосты" — клиентов,
-        оставшихся в панели после ранее неудачной (частичной) попытки создания,
-        из-за которых повторное создание валится с ошибкой "email already exists".
-        """
-        for iid in inbound_ids:
-            inbound = await self.get_inbound(iid)
-            if not inbound:
-                continue
-            raw = inbound.get("settings")
-            if not raw:
-                continue
-            try:
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
-            except Exception:
-                continue
-            for c in (parsed.get("clients") or []):
-                if c.get("email") == email:
-                    return c.get("id")
-        return None
-
     async def find_client_details_by_email(
         self,
         email: str,
@@ -409,28 +398,24 @@ class XUIClient:
         """
         return json.dumps({"clients": clients})
 
-    async def _try_legacy_add_client(self, inbound_id: int, client: dict, retries: int = 1) -> bool:
+    @staticmethod
+    def _is_email_conflict(msg: str) -> bool:
         """
-        Ретраим ТОЛЬКО пустой ответ (известный баг 3x-ui #3052/#3236 при конкурентной
-        записи в конфиг) — если панель ответила содержательно (например "Duplicate email"),
-        это не транзиентная ошибка, повторные попытки её не исправят, поэтому сразу выходим.
+        Отличает конфликт уникальности email ("Duplicate email", "email already
+        in use", ...) от прочих отказов панели. На конфликте имеет смысл не
+        создавать клиента заново, а обновить уже существующего.
         """
-        payload = {
-            "id": inbound_id,
-            "settings": self._make_client_settings_str([client]),
-        }
-        for attempt in range(1, retries + 2):
-            resp = await self._request("POST", "/panel/api/inbounds/addClient", json_body=payload)
-            if resp and resp.get("success"):
-                logger.info(f"3x-ui legacy addClient succeeded (inbound={inbound_id})")
-                return True
-            if resp is not None:
-                logger.error(f"3x-ui legacy addClient rejected (inbound={inbound_id}): {resp.get('msg')}")
-                return False
-            logger.debug(f"3x-ui legacy addClient empty response [{attempt}] (inbound={inbound_id})")
-            if attempt < retries + 1:
-                await asyncio.sleep(1.5)
-        return False
+        text = (msg or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "already in use",
+                "already exists",
+                "email already",
+                "duplicate email",
+                "email is used",
+            )
+        )
 
     async def _try_legacy_update_client(self, inbound_id: int, client: dict, retries: int = 1) -> bool:
         payload = {
@@ -479,11 +464,22 @@ class XUIClient:
         flow: str = "xtls-rprx-vision",
     ) -> Optional[str]:
         """
-        Добавляет нового клиента сразу во все указанные inbound'ы (общий UUID/subId),
+        Создаёт клиента сразу во всех указанных inbound'ах (общий UUID/subId),
         используя новую API-форму /panel/api/clients/add с полем "inboundIds".
-        Если основной эндпоинт недоступен — fallback на legacy addClient
-        по каждому inbound'у отдельно (там нет батч-режима, только один "id" за раз).
-        Возвращает client_id (UUID) при успехе, None при ошибке.
+
+        Если панель отвечает, что email уже занят (клиент остался от прошлой
+        подписки или предыдущей неудачной попытки), второго клиента НЕ создаём
+        и старого НЕ удаляем — обновляем существующего (expiryTime/enable/subId).
+        Раньше в такой ситуации промокод для уже созданного пользователя падал
+        с "email already in use".
+
+        Legacy-фолбэк /panel/api/inbounds/addClient убран: панель стабильно
+        отвечает на него пустым телом, а внутренние ретраи с релогином
+        превращали один вызов в 100+ секунд ожидания.
+
+        Возвращает UUID клиента (при конфликте email — UUID существующего), либо
+        None, если сбой временный (пустой ответ/сеть) и вызов имеет смысл
+        повторить. При содержательном отказе панели бросает XUIPermanentError.
         """
         cid = client_id or str(uuid.uuid4())
         client = {
@@ -500,17 +496,6 @@ class XUIClient:
             "reset": 0,
         }
 
-        # Подчищаем "хвост" — клиента с тем же email, оставшегося в панели после
-        # ранее неудачной (частичной) попытки создания. Без этого повторная
-        # попытка гарантированно упадёт с "Duplicate email" на каждом ретрае.
-        existing_uuid = await self.find_client_by_email(email, inbound_ids)
-        if existing_uuid:
-            logger.warning(
-                f"3x-ui add_client: найден старый клиент с email={email} "
-                f"(uuid={existing_uuid}), удаляю перед созданием нового"
-            )
-            await self.delete_client(existing_uuid, inbound_ids=inbound_ids)
-
         payload = {
             "client": client,
             "inboundIds": inbound_ids,
@@ -524,41 +509,45 @@ class XUIClient:
             )
             return cid
 
+        msg = (resp or {}).get("msg") or ""
         logger.warning(f"3x-ui add_client primary endpoint failed for email={email}: {resp}")
 
-        # Legacy fallback: батч-эндпоинта нет, добавляем в каждый inbound по отдельности
-        succeeded: list[int] = []
-        for idx, iid in enumerate(inbound_ids):
-            if idx > 0:
-                # небольшая пауза снижает конкуренцию за запись в конфиг 3x-ui
-                # между последовательными вызовами addClient по разным inbound'ам
-                await asyncio.sleep(0.5)
-            if await self._try_legacy_add_client(iid, client):
-                succeeded.append(iid)
-            else:
-                logger.error(f"3x-ui legacy addClient failed for inbound={iid} email={email}")
-
-        if len(succeeded) == len(inbound_ids):
-            return cid
-
-        # Частичный успех — самое опасное состояние: клиент реально создан в части
-        # inbound'ов, но не во всех. Если оставить как есть, запись в БД не создастся
-        # (мы вернём None), а email/UUID останется занят в 3x-ui — повторная попытка
-        # создать того же клиента будет падать из-за конфликта email. Поэтому откатываем
-        # то, что успело создаться, чтобы следующая попытка стартовала с чистого листа.
-        if succeeded:
-            logger.warning(
-                f"3x-ui add_client partial failure for email={email}: "
-                f"succeeded={succeeded}, failed={[i for i in inbound_ids if i not in succeeded]}. "
-                f"Rolling back succeeded inbounds..."
-            )
-            rolled_back = await self.delete_client(cid, inbound_ids=succeeded)
-            if not rolled_back:
-                logger.error(
-                    f"3x-ui rollback FAILED for email={email} client_id={cid} inbounds={succeeded}. "
-                    f"Клиент мог остаться висеть в панели — проверьте вручную по email={email}."
+        if self._is_email_conflict(msg):
+            existing = await self.find_client_details_by_email(email, inbound_ids)
+            if existing and existing.get("id"):
+                logger.warning(
+                    f"3x-ui add_client: email={email} уже занят (uuid={existing['id']}), "
+                    f"обновляю существующего клиента вместо создания нового"
                 )
+                updated = await self.update_client(
+                    inbound_ids=existing.get("inbound_ids") or inbound_ids,
+                    client_id=existing["id"],
+                    email=email,
+                    expire_ms=expire_ms,
+                    sub_id=sub_id,
+                    enable=True,
+                    flow=flow,
+                )
+                if updated:
+                    logger.info(
+                        f"3x-ui client updated instead of created: id={existing['id']} "
+                        f"email={email} sub_id={sub_id} inbounds={inbound_ids}"
+                    )
+                    return existing["id"]
 
+            # Панель уже сказала, что email занят, а обновить не удалось.
+            # Повторное создание вернёт ту же ошибку — ретраить бессмысленно.
+            raise XUIPermanentError(
+                f"email {email} already in use, обновить существующего клиента не удалось"
+            )
+
+        if resp is not None:
+            # Содержательный отказ панели (неверный inbound, битые данные и т.п.) —
+            # от повтора ответ не изменится.
+            raise XUIPermanentError(f"addClient rejected for email={email}: {msg or resp}")
+
+        # Пустой ответ/сетевая ошибка — транзиентный сбой: _request() внутри уже
+        # отработал свои ретраи, решение о внешнем повторе принимает вызывающий код.
         logger.error(f"3x-ui add_client failed for email={email} inbounds={inbound_ids}")
         return None
 

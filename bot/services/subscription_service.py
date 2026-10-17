@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import SubscriptionRepository
-from bot.services.xui_client import xui_client
+from bot.services.xui_client import XUIPermanentError, xui_client
 from config.settings import settings
 from database.models.subscription import Subscription
 
@@ -104,21 +104,33 @@ class SubscriptionService:
         delay: float = 3.0,
     ) -> Optional[str]:
         """
-        xui_client.add_client уже ретраит пустые ответы и откатывает частичный
-        успех внутри одного вызова, но добавляем внешний уровень попыток —
-        на случай, если сама панель в моммент вызова временно недоступна целиком.
+        xui_client.add_client уже ретраит пустые (транзиентные) ответы панели
+        внутри одного вызова, но добавляем внешний уровень попыток — на случай,
+        если сама панель в момент вызова временно недоступна целиком.
+
+        Содержательный отказ панели (XUIPermanentError: например "email already
+        in use" без возможности обновить клиента, неверный inbound и т.п.)
+        НЕ повторяем — ответ от повтора не изменится, а каждый круг попыток
+        занимает десятки секунд.
         """
         for attempt in range(1, retries + 1):
-            result_id = await xui_client.add_client(
-                inbound_ids=inbound_ids,
-                email=email,
-                expire_ms=expire_ms,
-                sub_id=sub_id,
-                client_id=client_id,
-                limit_ip=settings.DEFAULT_LIMIT_IP,
-                total_gb=0,
-                flow="xtls-rprx-vision",
-            )
+            try:
+                result_id = await xui_client.add_client(
+                    inbound_ids=inbound_ids,
+                    email=email,
+                    expire_ms=expire_ms,
+                    sub_id=sub_id,
+                    client_id=client_id,
+                    limit_ip=settings.DEFAULT_LIMIT_IP,
+                    total_gb=0,
+                    flow="xtls-rprx-vision",
+                )
+            except XUIPermanentError as e:
+                logger.error(
+                    f"3x-ui add_client: неретраибельная ошибка для email={email} "
+                    f"(попытка {attempt}/{retries}): {e}"
+                )
+                return None
             if result_id:
                 return result_id
             logger.warning(f"3x-ui add_client попытка {attempt}/{retries} неудачна для email={email}")
@@ -175,7 +187,7 @@ class SubscriptionService:
             user_id=user_id,
             plan_months=plan_months,
             expires_at=expires_at,
-            xui_client_id=client_id,
+            xui_client_id=result_id,
             xui_inbound_id=Subscription.format_inbound_ids(inbound_ids),
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
@@ -223,13 +235,42 @@ class SubscriptionService:
             user_id=user_id,
             plan_months=0,
             expires_at=expires_at,
-            xui_client_id=client_id,
+            xui_client_id=result_id,
             xui_inbound_id=Subscription.format_inbound_ids(inbound_ids),
             xui_sub_id=sub_id,
             subscription_url=subscription_url,
             inbound_type="vless_reality",
         )
         return sub
+
+    async def extend_by_days(self, sub: Subscription, days: int) -> Optional[Subscription]:
+        """
+        Продлевает конкретную подписку на N дней (промокод на дни, ручная
+        корректировка). Срок синхронизируется с 3x-ui, и только после успеха
+        меняется запись в БД — иначе пользователь видел бы новый срок в боте,
+        а панель продолжала бы отключать его по старой дате.
+        """
+        now = datetime.now(timezone.utc)
+        base = sub.expires_at if sub.expires_at.tzinfo else sub.expires_at.replace(tzinfo=timezone.utc)
+        new_expires = max(base, now) + timedelta(days=days)
+        expire_ms = int(new_expires.timestamp() * 1000)
+
+        logger.info(
+            f"Extending 3x-ui client by promo days: user={sub.user_id} days={days} "
+            f"new_expires={new_expires.isoformat()}"
+        )
+
+        ok = await self._sync_client_with_retries(sub, expire_ms, enable=True)
+        if not ok:
+            logger.error(f"3x-ui sync failed while extending subscription for user {sub.user_id}")
+            return None
+
+        sub.expires_at = new_expires
+        sub.is_active = True
+        sub.notified_7d = False
+        sub.notified_3d = False
+        sub.notified_1d = False
+        return await self.sub_repo.update(sub)
 
     async def _sync_client_with_retries(
         self,

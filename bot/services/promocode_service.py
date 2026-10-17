@@ -1,11 +1,10 @@
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.repositories import PromocodeRepository, SubscriptionRepository
 from bot.services.subscription_service import SubscriptionService
-from database.models.subscription import Subscription
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +53,16 @@ class PromocodeService:
             # впустую, а пользователь так и остаётся без подписки.
             sub = await self.sub_repo.get_active(user_id)
             if sub:
-                sub.expires_at = max(sub.expires_at, now) + timedelta(days=promo.value)
-                await self.sub_repo.update(sub)
+                # Продление действующей подписки: срок сначала применяется в
+                # 3x-ui и только потом сохраняется в БД (раньше обновлялась
+                # лишь БД, и панель отключала клиента по старой дате).
+                sub = await self.subscription_service.extend_by_days(sub, promo.value)
+                if not sub:
+                    logger.error(
+                        f"Promocode days activation failed to extend subscription "
+                        f"in 3x-ui for user {user_id}"
+                    )
+                    return PromocodeResult(False, error="server_error")
             else:
                 new_sub = await self.subscription_service.create_promo_subscription(
                     user_id=user_id,
